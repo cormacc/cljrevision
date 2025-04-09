@@ -1,0 +1,11 @@
+{:paths ["src"]
+ :deps {io.github.paintparty/bling {:mvn/version "0.5.2"}}
+ :tasks
+ ;;Test runner setup per https://blog.michielborkent.nl/babashka-test-runner.html
+ {test:bb {:extra-paths ["test"]
+           :extra-deps {io.github.cognitect-labs/test-runner
+                        {:git/tag "v0.5.1" :git/sha "dfb30dd"}}
+           :task (exec 'cognitect.test-runner.api/test)
+           :exec-args {:dirs ["test"]}
+           :org.babashka/cli {:coerce {:nses [:symbol]
+                                       :vars [:symbol]}}}}}

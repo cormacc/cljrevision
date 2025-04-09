@@ -1,0 +1,184 @@
+#!/usr/bin/env bb
+(require '[clojure.string :as str])
+(require '[babashka.cli :as cli])
+(require '[babashka.fs :as fs])
+;; (require '[clojure.edn :as edn])
+(require '[clj-yaml.core :as yaml])
+(require '[clojure.pprint :refer [pprint]])
+(require '[bling.core :refer [bling callout]])
+
+;; Commands:
+;;   revision --version, -v   # print the version
+;;   revision info            # Display info for all defined releasables
+;;   revision major           # Increment major revision index
+;;   revision minor           # Increment minor revision index
+;;   revision patch           # Increment patch revision index
+;;   revision changelog       # Display change log on stdout
+;;   revision tag             # Commit the current revision to a local git repo and add a version tag
+;;   revision chk             # Compute sha512 checksums for current build artefacts
+;;   revision md5             # Compute md5sums for current build artefacts
+;;   revision build           # Build releasable(s)
+;;   revision archive         # Archive releasable(s)
+;;   revision package         # Build and archive releasables
+;;   revision deploy          # Deploy releasable(s)
+;;   revision help            # Describe available commands
+
+;; Options:
+;;   [--dryrun], [--no-dryrun], [--skip-dryrun]
+;;                                               # Default: false
+;;   [--id=ID]
+
+;; (defn read-entries
+;;   []
+;;   (if (fs/exists? ENTRIES-LOCATION)
+;;     (edn/read-string (slurp ENTRIES-LOCATION))
+;;     []))
+
+;; (defn add-entry
+;;   [{:keys [opts]}]
+;;   (let [entries (read-entries)]
+;;     (spit ENTRIES-LOCATION
+;;           (conj entries
+;;                 (merge {:timestamp (System/currentTimeMillis)} ;; default timestamp
+;;                        opts)))))
+
+;; From https://gist.github.com/blacktaxi/1676575
+(defmacro f-string [^String string]
+  (let [-re #"#\{(.*?)\}"
+        fstr (clojure.string/replace string -re "%s")
+        fargs (map #(read-string (second %)) (re-seq -re string))]
+    `(format ~fstr ~@fargs)))
+
+(def cli-opts
+  {:entry     {:alias   :e
+               :desc    "Your dreams."
+               :require true}
+   :timestamp {:alias  :t
+               :desc   "A unix timestamp, when you recorded this."
+               :coerce {:timestamp :long}}})
+
+(def yaml-filename "releasables.yaml")
+
+(defn find-yaml-root [dir]
+  (println (str "Searching " dir " for " yaml-filename))
+  (let [candidate (fs/path dir yaml-filename)
+        parent (fs/parent dir)]
+    (if (fs/exists? candidate)
+      dir
+      (if (empty? parent)
+        nil
+        (recur parent)))))
+
+(defn load-definition [file-path]
+  (let [yaml-raw (slurp (str file-path))
+        ;; For some reason I adopted a :key: convention with multiple colons....
+        yaml-data (str/replace yaml-raw #":(\S+):" "$1:")]
+    (yaml/parse-string yaml-data)))
+
+(defn parse-revision [text revision-regex]
+  (let [version-matcher (re-pattern revision-regex)
+        version (re-find version-matcher text)
+        [match prefix major sep1 minor sep2 patch postfix] version]
+    {:major major :minor minor :patch patch
+     :prefix prefix :sep1 sep1 :sep2 sep2 :postfix postfix
+     :match match}))
+
+(def changelog-matcher #"(?s)<BEGIN CHANGELOG>(.+)<END CHANGELOG>")
+(defn extract-changelog [text comment-prefix]
+  (let [prefix-matcher (re-pattern (str "(?m)^" comment-prefix " ?"))]
+    (-> (re-find changelog-matcher text)
+        second
+        (str/replace prefix-matcher ""))))
+
+(def entry-matcher #"(?m)^Version (\S+) \((.+)\)\n((?:- .+\n)+)")
+(defn parse-changelog-entries [changelog-text]
+  (->> (re-seq entry-matcher changelog-text)
+       (mapv (fn [[match version date changes]]
+               {:version version
+                :date date
+                :changes (-> (str/replace changes #"(?m)^- " "")
+                             (str/split #"\n"))
+                :full-text match}))))
+
+(defn load-revision-info [{:keys [root revision] :as _releasable}]
+  (let [file-path-rel (:src revision)
+        file-path (fs/path root file-path-rel)
+        file-content (slurp (str file-path))
+        rev (parse-revision file-content (:regex revision))
+        changelog (extract-changelog file-content (:comment_prefix revision))
+        entries (parse-changelog-entries changelog)]
+    {:revision rev
+     :changelog changelog
+     :entries entries}))
+
+(defn load-all [path]
+  (let [root (find-yaml-root path)
+        definition (load-definition (fs/path root yaml-filename))]
+    (assoc definition :root root)))
+
+(defn load-default [path]
+  (let [{:keys [root releasables]} (load-all path)]
+    ;;Assume releasable root is project root for now...
+    (assoc (first releasables) :root root)))
+
+(defn help
+  [_]
+  (println
+   (str "help\n"
+        (cli/format-opts {:spec cli-opts}))))
+
+(defn format-revision [{:keys [major minor patch] :as _revision}]
+  ;;FIXME: Coerce these as ints after loading...
+  (f-string "v#{major}.#{minor}.#{patch}"))
+
+(defn format-build-artefact [{:keys [src dest chk] :or {dest nil chk true}}]
+  (let [deployed-as (or dest (last (str/split src #"/")))]
+    (format "%s => %s %s" src deployed-as (if chk "CHK" "NOCHK"))))
+
+(defn describe [releasable]
+  (let [{:keys [revision changelog entries]} (load-revision-info releasable)
+        latest-revision (first entries)
+        latest-changes (str/join "\n- " (:changes latest-revision))
+        build-steps (str/join "\n- " (:build_steps releasable))
+        build-artefacts (str/join "\n- " (mapv  #(format-build-artefact %) (:artefacts releasable)))]
+    (f-string "#{(:id releasable)} #{(format-revision revision)} (#{(:date latest-revision)})
+
+Changes:
+- #{latest-changes}
+
+Build steps:
+- #{build-steps}
+
+Build artefacts:
+- #{build-artefacts}
+")))
+
+(defn info [m]
+  (let [releasable (load-default (fs/cwd))]
+    (println (callout {:type :info :label "Releasable Info"} (describe releasable)))))
+
+(defn changelog [m]
+  (let [releasable (load-default (fs/cwd))
+        {:keys [entries]} (load-revision-info releasable)]
+    (doseq [{:keys [version date changes] :as _entry} entries]
+           (let [label (f-string "Version #{version} (#{date})")
+                 change-list (str "- " (str/join "\n- " changes))]
+             (print (callout {:type :info :label label} change-list))))))
+
+;; (defn major [m])
+
+(def table
+
+  [{:cmds [] :fn help}
+   {:cmds ["info"] :fn info}
+   {:cmds ["changelog"] :fn changelog}
+   ;; {:cmds ["major"] :fn major}
+   ;; {:cmds ["minor"]}
+   ;; {:cmds ["patch"]}
+   ])
+
+
+(defn -main [args]
+  (cli/dispatch table args))
+
+(-main *command-line-args*)
