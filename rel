@@ -129,10 +129,10 @@
         "  help                    Show this help message\n"
         "  info                    Display info for all defined releasables\n"
         "  changelog               Display change log on stdout\n"
-        "  major                   Increment major revision index (WIP)\n\n"
-        "Planned commands (not yet implemented):\n"
+        "  major                   Increment major revision index\n"
         "  minor                   Increment minor revision index\n"
-        "  patch                   Increment patch revision index\n"
+        "  patch                   Increment patch revision index\n\n"
+        "Planned commands (not yet implemented):\n"
         "  tag                     Commit current revision and add version tag\n"
         "  chk                     Compute sha512 checksums for build artefacts\n"
         "  md5                     Compute md5sums for build artefacts\n"
@@ -188,9 +188,100 @@ Build artefacts:
          (str/join "")
          print)))
 
+(defn read-changelog-input []
+  (println "Enter changelog info (one item per line / empty line ends entry)")
+  (loop [lines []]
+    (let [line (read-line)]
+      (if (str/blank? line)
+        lines
+        (recur (conj lines line))))))
+
+(defn format-date []
+  (let [now (java.time.LocalDate/now)
+        day (.getDayOfMonth now)
+        month (.getMonth now)
+        year (.getYear now)
+        month-abbrev (case (.toString month)
+                       "JANUARY" "Jan" "FEBRUARY" "Feb" "MARCH" "Mar"
+                       "APRIL" "Apr" "MAY" "May" "JUNE" "Jun"
+                       "JULY" "Jul" "AUGUST" "Aug" "SEPTEMBER" "Sep"
+                       "OCTOBER" "Oct" "NOVEMBER" "Nov" "DECEMBER" "Dec")]
+    (f-string "#{day} #{month-abbrev} #{year}")))
+
+(defn increment-patch-version [{:keys [major minor patch prefix sep1 sep2 postfix]}]
+  (let [new-patch (str (inc (Integer/parseInt patch)))]
+    {:major major :minor minor :patch new-patch
+     :prefix prefix :sep1 sep1 :sep2 sep2 :postfix postfix
+     :new-version-string (str prefix major sep1 minor sep2 new-patch postfix)}))
+
+(defn increment-minor-version [{:keys [major minor patch prefix sep1 sep2 postfix]}]
+  (let [new-minor (str (inc (Integer/parseInt minor)))
+        new-patch "0"]
+    {:major major :minor new-minor :patch new-patch
+     :prefix prefix :sep1 sep1 :sep2 sep2 :postfix postfix
+     :new-version-string (str prefix major sep1 new-minor sep2 new-patch postfix)}))
+
+(defn increment-major-version [{:keys [major minor patch prefix sep1 sep2 postfix]}]
+  (let [new-major (str (inc (Integer/parseInt major)))
+        new-minor "0"
+        new-patch "0"]
+    {:major new-major :minor new-minor :patch new-patch
+     :prefix prefix :sep1 sep1 :sep2 sep2 :postfix postfix
+     :new-version-string (str prefix new-major sep1 new-minor sep2 new-patch postfix)}))
+
+(defn format-changelog-entry [version date changelog-lines comment-prefix]
+  (let [header (f-string "#{comment-prefix} Version #{version} (#{date})")
+        change-lines (map #(str comment-prefix " - " %) changelog-lines)
+        blank-line (str comment-prefix)]
+    (str/join "\n" (concat [blank-line header] change-lines))))
+
+(defn update-source-file [file-path old-revision new-revision new-changelog-entry]
+  (let [file-content (slurp file-path)
+        ;; Replace the version string
+        new-content-with-version (str/replace file-content 
+                                              (:match old-revision) 
+                                              (:new-version-string new-revision))
+        ;; Find and update the changelog - use more precise matching
+        changelog-pattern #"(?s)(<BEGIN CHANGELOG>)(.*?)(<END CHANGELOG>)"
+        match (re-find changelog-pattern new-content-with-version)]
+    (if match
+      (let [[full-match start-tag existing-content end-tag] match
+            ;; Clean existing content and ensure proper spacing
+            cleaned-existing (str/trim existing-content)
+            ;; Build new changelog with proper structure
+            new-changelog-content (str "\n" new-changelog-entry "\n" cleaned-existing "\n")
+            ;; Replace the entire changelog section
+            updated-content (str/replace new-content-with-version 
+                                         changelog-pattern 
+                                         (str start-tag new-changelog-content end-tag))]
+        (spit file-path updated-content)
+        true)
+      false)))
+
+(defn update-version-and-changelog [increment-fn]
+  (let [releasable (load-default (fs/cwd))
+        {:keys [revision]} (load-revision-info releasable)
+        changelog-lines (read-changelog-input)]
+    (if (empty? changelog-lines)
+      (println "No changelog entries provided. Version not updated.")
+      (let [new-revision (increment-fn revision)
+            new-version (f-string "#{(:major new-revision)}.#{(:minor new-revision)}.#{(:patch new-revision)}")
+            current-date (format-date)
+            comment-prefix (get-in releasable [:revision :comment_prefix])
+            new-changelog-entry (format-changelog-entry new-version current-date changelog-lines comment-prefix)
+            file-path (fs/path (:root releasable) (get-in releasable [:revision :src]))]
+        (if (update-source-file (str file-path) revision new-revision new-changelog-entry)
+          (println (f-string "Successfully updated version to #{new-version} and added changelog entry."))
+          (println "Failed to update source file - could not locate changelog section."))))))
+
+(defn patch [m]
+  (update-version-and-changelog increment-patch-version))
+
+(defn minor [m]
+  (update-version-and-changelog increment-minor-version))
+
 (defn major [m]
-  (let [releasable (load-default (fs/cwd))]
-    (println releasable)))
+  (update-version-and-changelog increment-major-version))
 
 (def table
 
@@ -198,8 +289,8 @@ Build artefacts:
    {:cmds ["info"] :fn info}
    {:cmds ["changelog"] :fn changelog}
    {:cmds ["major"] :fn major}
-   ;; {:cmds ["minor"]}
-   ;; {:cmds ["patch"]}
+   {:cmds ["minor"] :fn minor}
+   {:cmds ["patch"] :fn patch}
    ])
 
 
