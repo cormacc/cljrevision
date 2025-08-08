@@ -1,5 +1,5 @@
 {:paths ["src"]
- :deps {io.github.paintparty/bling {:mvn/version "0.5.2"}}
+ :deps {io.github.paintparty/bling {:mvn/version "0.8.8"}}
  :tasks
  ;;Test runner setup per https://blog.michielborkent.nl/babashka-test-runner.html
  {test:bb {:extra-paths ["test"]

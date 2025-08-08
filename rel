@@ -124,8 +124,26 @@
 (defn help
   [_]
   (println
-   (str "help\n"
-        (cli/format-opts {:spec cli-opts}))))
+   (str "revision - Release management and version control tool\n\n"
+        "Available commands:\n"
+        "  help                    Show this help message\n"
+        "  info                    Display info for all defined releasables\n"
+        "  changelog               Display change log on stdout\n"
+        "  major                   Increment major revision index (WIP)\n\n"
+        "Planned commands (not yet implemented):\n"
+        "  minor                   Increment minor revision index\n"
+        "  patch                   Increment patch revision index\n"
+        "  tag                     Commit current revision and add version tag\n"
+        "  chk                     Compute sha512 checksums for build artefacts\n"
+        "  md5                     Compute md5sums for build artefacts\n"
+        "  build                   Build releasable(s)\n"
+        "  archive                 Archive releasable(s)\n"
+        "  package                 Build and archive releasables\n"
+        "  deploy                  Deploy releasable(s)\n\n"
+        "Options:\n"
+        "  --dryrun                Don't actually perform operations\n"
+        "  --id=ID                 Target specific releasable by ID\n"
+        "  --version, -v           Print the version\n")))
 
 (defn format-revision [{:keys [major minor patch] :as _revision}]
   ;;FIXME: Coerce these as ints after loading...
@@ -151,28 +169,35 @@ Build steps:
 
 Build artefacts:
 - #{build-artefacts}
+
+(from #{(:root releasable)}/releasable.yaml)
 ")))
 
 (defn info [m]
   (let [releasable (load-default (fs/cwd))]
-    (println (callout {:type :info :label "Releasable Info"} (describe releasable)))))
+    (print (str (callout {:type :info :label "Releasable Info"} (describe releasable)) "\n"))))
 
 (defn changelog [m]
   (let [releasable (load-default (fs/cwd))
         {:keys [entries]} (load-revision-info releasable)]
-    (doseq [{:keys [version date changes] :as _entry} entries]
-           (let [label (f-string "Version #{version} (#{date})")
-                 change-list (str "- " (str/join "\n- " changes))]
-             (print (callout {:type :info :label label} change-list))))))
+    (->> entries
+         (map (fn [{:keys [version date changes] :as _entry}]
+                (let [label (f-string "Version #{version} (#{date})")
+                      change-list (str "- " (str/join "\n- " changes))]
+                  (callout {:type :info :label label} change-list))))
+         (str/join "")
+         print)))
 
-;; (defn major [m])
+(defn major [m]
+  (let [releasable (load-default (fs/cwd))]
+    (println releasable)))
 
 (def table
 
   [{:cmds [] :fn help}
    {:cmds ["info"] :fn info}
    {:cmds ["changelog"] :fn changelog}
-   ;; {:cmds ["major"] :fn major}
+   {:cmds ["major"] :fn major}
    ;; {:cmds ["minor"]}
    ;; {:cmds ["patch"]}
    ])
