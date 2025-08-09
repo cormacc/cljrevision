@@ -6,6 +6,7 @@
 (require '[clj-yaml.core :as yaml])
 (require '[clojure.pprint :refer [pprint]])
 (require '[bling.core :refer [bling callout]])
+(require '[babashka.process :as process])
 
 ;; Commands:
 ;;   revision --version, -v   # print the version
@@ -131,12 +132,12 @@
         "  changelog               Display change log on stdout\n"
         "  major                   Increment major revision index\n"
         "  minor                   Increment minor revision index\n"
-        "  patch                   Increment patch revision index\n\n"
+        "  patch                   Increment patch revision index\n"
+        "  build                   Build releasable(s)\n\n"
         "Planned commands (not yet implemented):\n"
         "  tag                     Commit current revision and add version tag\n"
         "  chk                     Compute sha512 checksums for build artefacts\n"
         "  md5                     Compute md5sums for build artefacts\n"
-        "  build                   Build releasable(s)\n"
         "  archive                 Archive releasable(s)\n"
         "  package                 Build and archive releasables\n"
         "  deploy                  Deploy releasable(s)\n\n"
@@ -238,8 +239,8 @@ Build artefacts:
 (defn update-source-file [file-path old-revision new-revision new-changelog-entry]
   (let [file-content (slurp file-path)
         ;; Replace the version string
-        new-content-with-version (str/replace file-content 
-                                              (:match old-revision) 
+        new-content-with-version (str/replace file-content
+                                              (:match old-revision)
                                               (:new-version-string new-revision))
         ;; Find and update the changelog - use more precise matching
         changelog-pattern #"(?s)(<BEGIN CHANGELOG>)(.*?)(<END CHANGELOG>)"
@@ -251,8 +252,8 @@ Build artefacts:
             ;; Build new changelog with proper structure
             new-changelog-content (str "\n" new-changelog-entry "\n" cleaned-existing "\n")
             ;; Replace the entire changelog section
-            updated-content (str/replace new-content-with-version 
-                                         changelog-pattern 
+            updated-content (str/replace new-content-with-version
+                                         changelog-pattern
                                          (str start-tag new-changelog-content end-tag))]
         (spit file-path updated-content)
         true)
@@ -283,15 +284,43 @@ Build artefacts:
 (defn major [m]
   (update-version-and-changelog increment-major-version))
 
-(def table
+(defn build [m]
+  (let [releasable (load-default (fs/cwd))
+        build-steps (:build_steps releasable)]
+    (if (empty? build-steps)
+      (println "No build steps defined in releasables.yaml")
+      (do
+        (println (f-string "Executing #{(count build-steps)} build step(s)..."))
+        ;; Create a script that prefixes each step with an echo of the step description
+        (let [prefixed-steps (map-indexed 
+                               (fn [index step]
+                                 (let [step-desc (f-string "[#{(inc index)}/#{(count build-steps)}] #{step}")]
+                                   (f-string "echo '#{step-desc}' && #{step}")))
+                               build-steps)
+              combined-script (str/join " && " prefixed-steps)]
+          (try
+            (let [result (process/shell {:out :string :err :string} "sh" "-c" combined-script)]
+              (when (:out result) (print (:out result)))
+              (when (and (:err result) (not (str/blank? (:err result))))
+                (print (:err result)))
+              (when (not= 0 (:exit result))
+                (println (f-string "Error: Build failed with exit code #{(:exit result)}"))
+                (when (not (str/blank? (:err result)))
+                  (println (f-string "Error details: #{(:err result)}")))
+                (System/exit 1)))
+            (catch Exception e
+              (println (f-string "Error executing build: #{(.getMessage e)}"))
+              (System/exit 1))))
+        (println "All build steps completed successfully!")))))
 
+(def table
   [{:cmds [] :fn help}
    {:cmds ["info"] :fn info}
    {:cmds ["changelog"] :fn changelog}
    {:cmds ["major"] :fn major}
    {:cmds ["minor"] :fn minor}
    {:cmds ["patch"] :fn patch}
-   ])
+   {:cmds ["build"] :fn build}])
 
 
 (defn -main [args]

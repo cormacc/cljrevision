@@ -1,0 +1,4 @@
+#!/usr/bin/env bb
+
+(println "Hello")
+(System/exit 0)
