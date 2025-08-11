@@ -7,6 +7,7 @@
 (require '[clojure.pprint :refer [pprint]])
 (require '[bling.core :refer [bling callout]])
 (require '[babashka.process :as process])
+(require '[rel.core :as core])
 
 ;; Commands:
 ;;   revision --version, -v   # print the version
@@ -76,13 +77,7 @@
         yaml-data (str/replace yaml-raw #":(\S+):" "$1:")]
     (yaml/parse-string yaml-data)))
 
-(defn parse-revision [text revision-regex]
-  (let [version-matcher (re-pattern revision-regex)
-        version (re-find version-matcher text)
-        [match prefix major sep1 minor sep2 patch postfix] version]
-    {:major major :minor minor :patch patch
-     :prefix prefix :sep1 sep1 :sep2 sep2 :postfix postfix
-     :match match}))
+;; Now using core/parse-revision from rel.core namespace
 
 (def changelog-matcher #"(?s)<BEGIN CHANGELOG>(.+)<END CHANGELOG>")
 (defn extract-changelog [text comment-prefix]
@@ -105,7 +100,7 @@
   (let [file-path-rel (:src revision)
         file-path (fs/path root file-path-rel)
         file-content (slurp (str file-path))
-        rev (parse-revision file-content (:regex revision))
+        rev (core/parse-revision file-content (:regex revision))
         changelog (extract-changelog file-content (:comment_prefix revision))
         entries (parse-changelog-entries changelog)]
     {:revision rev
@@ -209,26 +204,7 @@ Build artefacts:
                        "OCTOBER" "Oct" "NOVEMBER" "Nov" "DECEMBER" "Dec")]
     (f-string "#{day} #{month-abbrev} #{year}")))
 
-(defn increment-patch-version [{:keys [major minor patch prefix sep1 sep2 postfix]}]
-  (let [new-patch (str (inc (Integer/parseInt patch)))]
-    {:major major :minor minor :patch new-patch
-     :prefix prefix :sep1 sep1 :sep2 sep2 :postfix postfix
-     :new-version-string (str prefix major sep1 minor sep2 new-patch postfix)}))
-
-(defn increment-minor-version [{:keys [major minor patch prefix sep1 sep2 postfix]}]
-  (let [new-minor (str (inc (Integer/parseInt minor)))
-        new-patch "0"]
-    {:major major :minor new-minor :patch new-patch
-     :prefix prefix :sep1 sep1 :sep2 sep2 :postfix postfix
-     :new-version-string (str prefix major sep1 new-minor sep2 new-patch postfix)}))
-
-(defn increment-major-version [{:keys [major minor patch prefix sep1 sep2 postfix]}]
-  (let [new-major (str (inc (Integer/parseInt major)))
-        new-minor "0"
-        new-patch "0"]
-    {:major new-major :minor new-minor :patch new-patch
-     :prefix prefix :sep1 sep1 :sep2 sep2 :postfix postfix
-     :new-version-string (str prefix new-major sep1 new-minor sep2 new-patch postfix)}))
+;; Now using increment functions from rel.core namespace
 
 (defn format-changelog-entry [version date changelog-lines comment-prefix]
   (let [header (f-string "#{comment-prefix} Version #{version} (#{date})")
@@ -276,13 +252,13 @@ Build artefacts:
           (println "Failed to update source file - could not locate changelog section."))))))
 
 (defn patch [m]
-  (update-version-and-changelog increment-patch-version))
+  (update-version-and-changelog core/increment-patch-version))
 
 (defn minor [m]
-  (update-version-and-changelog increment-minor-version))
+  (update-version-and-changelog core/increment-minor-version))
 
 (defn major [m]
-  (update-version-and-changelog increment-major-version))
+  (update-version-and-changelog core/increment-major-version))
 
 (defn build [m]
   (let [releasable (load-default (fs/cwd))

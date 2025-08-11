@@ -8,4 +8,6 @@
            :task (exec 'cognitect.test-runner.api/test)
            :exec-args {:dirs ["test"]}
            :org.babashka/cli {:coerce {:nses [:symbol]
-                                       :vars [:symbol]}}}}}
+                                       :vars [:symbol]}}}
+  nrepl:mcp {:doc "Run nrepl on port 7888 for clojure-mcp to connect to"
+             :task (shell "bb nrepl-server 7888")}}}
