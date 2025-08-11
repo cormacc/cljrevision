@@ -27,5 +27,7 @@
       - :dest: ./build/deploy-dest/2
       # And check if the new (v2.0.2) deployment steps work....
       - :steps:
-          - mkdir -p ./build/deploy-dest/3
-          - touch ./test-output/3/bla.bla
+        - "export DEPLOYED_AT=$(date)"
+        - mkdir -p ./build/deploy-dest/3
+        - touch ./build/deploy-dest/3/deployed.txt
+        - "echo \"Custom deployment completed at $DEPLOYED_AT\" > ./build/deploy-dest/3/deployed.txt"

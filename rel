@@ -128,14 +128,14 @@
         "  major                   Increment major revision index\n"
         "  minor                   Increment minor revision index\n"
         "  patch                   Increment patch revision index\n"
-        "  build                   Build releasable(s)\n\n"
+        "  build                   Build releasable(s)\n"
+        "  deploy                  Deploy artefacts to configured destinations\n\n"
         "Planned commands (not yet implemented):\n"
         "  tag                     Commit current revision and add version tag\n"
         "  chk                     Compute sha512 checksums for build artefacts\n"
         "  md5                     Compute md5sums for build artefacts\n"
         "  archive                 Archive releasable(s)\n"
-        "  package                 Build and archive releasables\n"
-        "  deploy                  Deploy releasable(s)\n\n"
+        "  package                 Build and archive releasables\n\n"
         "Options:\n"
         "  --dryrun                Don't actually perform operations\n"
         "  --id=ID                 Target specific releasable by ID\n"
@@ -289,6 +289,79 @@ Build artefacts:
               (System/exit 1))))
         (println "All build steps completed successfully!")))))
 
+(defn deploy [m]
+  (let [releasable (load-default (fs/cwd))
+        artefacts (:artefacts releasable)
+        deploy-targets (:deploy releasable)]
+    (cond
+      (empty? artefacts)
+      (println "No artefacts defined in releasables.yaml")
+      
+      (empty? deploy-targets)
+      (println "No deployment destinations defined in releasables.yaml")
+      
+      :else
+      (do
+        (println (f-string "Deploying #{(count artefacts)} artefact(s) to #{(count deploy-targets)} destination(s)..."))
+        
+        (doseq [target deploy-targets]
+          (if (:steps target)
+            (do
+              (println "Executing custom deployment steps...")
+              (let [steps (:steps target)
+                    combined-script (str/join " && " steps)]
+                (try
+                  (let [result (process/shell {:out :string :err :string} "sh" "-c" combined-script)]
+                    (when (:out result) (print (:out result)))
+                    (when (and (:err result) (not (str/blank? (:err result))))
+                      (print (:err result)))
+                    (when (not= 0 (:exit result))
+                      (println (f-string "Error: Deployment step failed with exit code #{(:exit result)}"))
+                      (System/exit 1)))
+                  (catch Exception e
+                    (println (f-string "Error executing deployment steps: #{(.getMessage e)}"))
+                    (System/exit 1)))))
+            
+            (when-let [dest (:dest target)]
+              (println (f-string "Deploying to #{dest}"))
+              
+              (try
+                (fs/create-dirs dest)
+                (catch Exception e
+                  (println (f-string "Error creating destination directory #{dest}: #{(.getMessage e)}"))
+                  (System/exit 1)))
+              
+              (doseq [artefact artefacts]
+                (let [src-file (:src artefact)
+                      src-path (fs/path src-file)
+                      dest-file (or (:dest artefact) (fs/file-name src-file))
+                      dest-path (fs/path dest dest-file)]
+                  
+                  (if (fs/exists? src-path)
+                    (do
+                      (println (f-string "  Copying #{src-file} => #{dest}/#{dest-file}"))
+                      (try
+                        (fs/copy src-path dest-path {:replace-existing true})
+                        
+                        (when (not= false (:chk artefact))
+                          (println (f-string "  Generating checksum for #{dest-file}"))
+                          (try
+                            (let [result (process/shell {:out :string :err :string :dir (str dest)}
+                                                       "sh" "-c"
+                                                       (f-string "sha512sum #{dest-file} > #{dest-file}.sha512"))]
+                              (when (not= 0 (:exit result))
+                                (println (f-string "Warning: Failed to generate checksum for #{dest-file}"))))
+                            (catch Exception e
+                              (println (f-string "Warning: Could not generate checksum: #{(.getMessage e)}")))))
+                        
+                        (catch Exception e
+                          (println (f-string "Error copying #{src-file}: #{(.getMessage e)}"))
+                          (System/exit 1))))
+                    (do
+                      (println (f-string "Warning: Source file #{src-file} not found, skipping")))))))))
+        
+        (println "Deployment completed successfully!")))))
+
 (def table
   [{:cmds [] :fn help}
    {:cmds ["info"] :fn info}
@@ -296,7 +369,8 @@ Build artefacts:
    {:cmds ["major"] :fn major}
    {:cmds ["minor"] :fn minor}
    {:cmds ["patch"] :fn patch}
-   {:cmds ["build"] :fn build}])
+   {:cmds ["build"] :fn build}
+   {:cmds ["deploy"] :fn deploy}])
 
 
 (defn -main [args]
