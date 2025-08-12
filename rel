@@ -52,11 +52,11 @@
     `(format ~fstr ~@fargs)))
 
 (def cli-opts
-  {:entry     {:alias   :e
-               :desc    "Your dreams."
-               :require true}
-   :timestamp {:alias  :t
-               :desc   "A unix timestamp, when you recorded this."
+  {:entry {:alias :e
+           :desc "Your dreams."
+           :require true}
+   :timestamp {:alias :t
+               :desc "A unix timestamp, when you recorded this."
                :coerce {:timestamp :long}}})
 
 (def yaml-filename "releasables.yaml")
@@ -129,10 +129,10 @@
         "  minor                   Increment minor revision index\n"
         "  patch                   Increment patch revision index\n"
         "  build                   Build releasable(s)\n"
+        "  chk                     Compute sha512 checksums for build artefacts\n"
         "  deploy                  Deploy artefacts to configured destinations\n\n"
         "Planned commands (not yet implemented):\n"
         "  tag                     Commit current revision and add version tag\n"
-        "  chk                     Compute sha512 checksums for build artefacts\n"
         "  md5                     Compute md5sums for build artefacts\n"
         "  archive                 Archive releasable(s)\n"
         "  package                 Build and archive releasables\n\n"
@@ -154,7 +154,7 @@
         latest-revision (first entries)
         latest-changes (str/join "\n- " (:changes latest-revision))
         build-steps (str/join "\n- " (:build_steps releasable))
-        build-artefacts (str/join "\n- " (mapv  #(format-build-artefact %) (:artefacts releasable)))]
+        build-artefacts (str/join "\n- " (mapv #(format-build-artefact %) (:artefacts releasable)))]
     (f-string "#{(:id releasable)} #{(format-revision revision)} (#{(:date latest-revision)})
 
 Changes:
@@ -268,11 +268,11 @@ Build artefacts:
       (do
         (println (f-string "Executing #{(count build-steps)} build step(s)..."))
         ;; Create a script that prefixes each step with an echo of the step description
-        (let [prefixed-steps (map-indexed 
-                               (fn [index step]
-                                 (let [step-desc (f-string "[#{(inc index)}/#{(count build-steps)}] #{step}")]
-                                   (f-string "echo '#{step-desc}' && #{step}")))
-                               build-steps)
+        (let [prefixed-steps (map-indexed
+                              (fn [index step]
+                                (let [step-desc (f-string "[#{(inc index)}/#{(count build-steps)}] #{step}")]
+                                  (f-string "echo '#{step-desc}' && #{step}")))
+                              build-steps)
               combined-script (str/join " && " prefixed-steps)]
           (try
             (let [result (process/shell {:out :string :err :string} "sh" "-c" combined-script)]
@@ -289,6 +289,31 @@ Build artefacts:
               (System/exit 1))))
         (println "All build steps completed successfully!")))))
 
+(defn calc-checksum [src-file]
+  (if (fs/exists? (fs/path src-file))
+    (let [{:keys [exit out] :as _result} (process/shell {:out :string :err :string}
+                                                        (f-string "sha512sum #{src-file}"))]
+      (if (= 0 exit)
+        out
+        (throw (ex-info "Error: Failed to generate checksum for #{src-file}" {:file src-file}))))
+    (throw (ex-info (f-string "Warning: Source file #{src-file} not found, skipping") {:file src-file}))))
+
+(defn chk [m]
+  (let [releasable (load-default (fs/cwd))
+        artefacts (:artefacts releasable)]
+    (if (empty? artefacts)
+      (println "No artefacts defined in releasables.yaml")
+      (do
+        (println (f-string "Calculating SHA512 checksums for #{(count artefacts)} artefact(s)..."))
+        (doseq [{:keys [src chk] :as artefact} artefacts]
+          (if (not= false chk)
+            (try
+              (let [checksum (calc-checksum src)]
+                (print checksum))
+              (catch Exception e
+                (println (f-string "Error generating checksum: #{(.getMessage e)}"))))
+            (println (f-string "... bypassing checksum calculation for #{src} ..."))))))))
+
 (defn deploy [m]
   (let [releasable (load-default (fs/cwd))
         artefacts (:artefacts releasable)
@@ -296,14 +321,14 @@ Build artefacts:
     (cond
       (empty? artefacts)
       (println "No artefacts defined in releasables.yaml")
-      
+
       (empty? deploy-targets)
       (println "No deployment destinations defined in releasables.yaml")
-      
+
       :else
       (do
         (println (f-string "Deploying #{(count artefacts)} artefact(s) to #{(count deploy-targets)} destination(s)..."))
-        
+
         (doseq [target deploy-targets]
           (if (:steps target)
             (do
@@ -321,46 +346,34 @@ Build artefacts:
                   (catch Exception e
                     (println (f-string "Error executing deployment steps: #{(.getMessage e)}"))
                     (System/exit 1)))))
-            
+
             (when-let [dest (:dest target)]
               (println (f-string "Deploying to #{dest}"))
-              
+
               (try
                 (fs/create-dirs dest)
                 (catch Exception e
                   (println (f-string "Error creating destination directory #{dest}: #{(.getMessage e)}"))
                   (System/exit 1)))
-              
-              (doseq [artefact artefacts]
-                (let [src-file (:src artefact)
-                      src-path (fs/path src-file)
-                      dest-file (or (:dest artefact) (fs/file-name src-file))
-                      dest-path (fs/path dest dest-file)]
-                  
-                  (if (fs/exists? src-path)
-                    (do
-                      (println (f-string "  Copying #{src-file} => #{dest}/#{dest-file}"))
-                      (try
-                        (fs/copy src-path dest-path {:replace-existing true})
-                        
-                        (when (not= false (:chk artefact))
-                          (println (f-string "  Generating checksum for #{dest-file}"))
-                          (try
-                            (let [result (process/shell {:out :string :err :string :dir (str dest)}
-                                                       "sh" "-c"
-                                                       (f-string "sha512sum #{dest-file} > #{dest-file}.sha512"))]
-                              (when (not= 0 (:exit result))
-                                (println (f-string "Warning: Failed to generate checksum for #{dest-file}"))))
-                            (catch Exception e
-                              (println (f-string "Warning: Could not generate checksum: #{(.getMessage e)}")))))
-                        
-                        (catch Exception e
-                          (println (f-string "Error copying #{src-file}: #{(.getMessage e)}"))
-                          (System/exit 1))))
-                    (do
-                      (println (f-string "Warning: Source file #{src-file} not found, skipping")))))))))
-        
-        (println "Deployment completed successfully!")))))
+
+              (doseq [{:keys [src chk] :as artefact} artefacts]
+                (let [src-path (fs/path src)
+                      dest-file (or (:dest artefact) (fs/file-name src))
+                      dest-path (fs/path dest dest-file)
+                      dest-chk (str dest-path ".sha512")]
+
+                  (println (f-string "  Copying #{src} => #{dest}/#{dest-file}"))
+                  (try
+                    (fs/copy src-path dest-path {:replace-existing true})
+                    (when (not= false (:chk artefact))
+                      (println (f-string "  ... checksum => #{dest-chk}"))
+                      (let [checksum (calc-checksum src)]
+                        (spit dest-chk checksum)))
+                    (catch Exception e
+                      (println (f-string "Error deploying #{src}: #{(.getMessage e)}"))
+                      (System/exit 1)))))))
+
+          (println "Deployment completed successfully!"))))))
 
 (def table
   [{:cmds [] :fn help}
@@ -370,8 +383,8 @@ Build artefacts:
    {:cmds ["minor"] :fn minor}
    {:cmds ["patch"] :fn patch}
    {:cmds ["build"] :fn build}
+   {:cmds ["chk"] :fn chk}
    {:cmds ["deploy"] :fn deploy}])
-
 
 (defn -main [args]
   (cli/dispatch table args))
