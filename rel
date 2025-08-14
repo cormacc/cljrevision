@@ -180,7 +180,7 @@ Build artefacts:
          (map (fn [{:keys [version date changes] :as _entry}]
                 (let [label (f-string "Version #{version} (#{date})")
                       change-list (str "- " (str/join "\n- " changes))]
-                  (callout {:type :info :label label} change-list))))
+                  (callout {:type :info :label label :theme :gutter} change-list))))
          (str/join "")
          print)))
 
