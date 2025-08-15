@@ -23,6 +23,7 @@
       - :src: bb.edn
         :chk: true
     #Define two deployment destinations to verify multiple deployments work as intended
+    :archive: ./build/archives
     :deploy:
       - :dest: ./build/deploy-dest/1
       - :dest: ./build/deploy-dest/2

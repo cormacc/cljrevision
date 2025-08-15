@@ -130,11 +130,11 @@
         "  patch                   Increment patch revision index\n"
         "  build                   Build releasable(s)\n"
         "  chk                     Compute sha512 checksums for build artefacts\n"
+        "  archive                 Archive artefacts to <ID>-v<REV>.zip file\n"
         "  deploy                  Deploy artefacts to configured destinations\n\n"
         "Planned commands (not yet implemented):\n"
         "  tag                     Commit current revision and add version tag\n"
         "  md5                     Compute md5sums for build artefacts\n"
-        "  archive                 Archive releasable(s)\n"
         "  package                 Build and archive releasables\n\n"
         "Options:\n"
         "  --dryrun                Don't actually perform operations\n"
@@ -401,6 +401,85 @@ Build artefacts:
           (deploy-to target artefacts version-string))
         (println "Deployment completed successfully!")))))
 
+(defn archive [m]
+  (let [releasable (load-default (fs/cwd))
+        artefacts (:artefacts releasable)
+        archive-dest (:archive releasable)
+        {:keys [revision]} (load-revision-info releasable)
+        version-string (f-string "#{(:major revision)}.#{(:minor revision)}.#{(:patch revision)}")
+        releasable-id (:id releasable)
+        archive-filename (f-string "#{releasable-id}-v#{version-string}.zip")
+        archive-path (fs/path archive-dest archive-filename)]
+
+    (cond
+      (empty? artefacts)
+      (println "No artefacts defined in releasables.yaml")
+
+      (nil? archive-dest)
+      (println "No archive destination defined in releasables.yaml (missing :archive key)")
+
+      :else
+      (do
+        (println (f-string "Archiving #{(count artefacts)} artefact(s) to #{archive-path}..."))
+
+        ;; Create archive destination directory
+        (try
+          (fs/create-dirs archive-dest)
+          (catch Exception e
+            (println (f-string "Error creating archive directory #{archive-dest}: #{(.getMessage e)}"))
+            (System/exit 1)))
+
+        ;; Delete existing archive if it exists
+        (when (fs/exists? archive-path)
+          (fs/delete archive-path))
+
+        ;; Create zip archive with artifacts
+        (doseq [{:keys [src chk] :as artefact} artefacts]
+          (let [src-path (fs/path src)
+                src-filename (fs/file-name src)
+                dest-file (determine-dest-filename artefact src-filename version-string)
+                chk-file (str dest-file ".sha512")]
+
+            (if (fs/exists? src-path)
+              (do
+                (println (f-string "  Adding #{src} as #{dest-file}"))
+                (try
+;; Add the main file to zip
+                  (let [parent-dir (or (fs/parent src-path) ".")
+                        zip-cmd (f-string "cd #{parent-dir} && zip -u #{archive-path} #{(fs/file-name src-path)}")]
+                    (when (not= 0 (:exit (process/shell {:out :string :err :string} "sh" "-c" zip-cmd)))
+                      (throw (ex-info "Failed to add file to zip" {:file src}))))
+
+                  ;; Add checksum file if required
+                  (when (not= false chk)
+                    (println (f-string "    Adding checksum #{chk-file}"))
+                    (let [checksum (calc-checksum src)
+                          temp-chk-file (str "/tmp/" (fs/file-name src) ".sha512")]
+                      (spit temp-chk-file checksum)
+                      (let [chk-zip-cmd (f-string "zip -j -u #{archive-path} #{temp-chk-file}")]
+                        (when (not= 0 (:exit (process/shell {:out :string :err :string} "sh" "-c" chk-zip-cmd)))
+                          (throw (ex-info "Failed to add checksum to zip" {:file temp-chk-file}))))
+                      (fs/delete temp-chk-file)))
+
+                  (catch Exception e
+                    (println (f-string "Error archiving #{src}: #{(.getMessage e)}"))
+                    (System/exit 1))))
+
+              (do
+                (println (f-string "  Warning: Source file #{src} not found, skipping"))))))
+
+        (println (f-string "Archive created successfully: #{archive-path}"))
+
+        ;; Generate SHA512 checksum for the archive
+        (let [archive-chk-path (str archive-path ".sha512")]
+          (try
+            (println (f-string "Generating checksum: #{archive-chk-path}"))
+            (let [checksum (calc-checksum (str archive-path))]
+              (spit archive-chk-path checksum)
+              (println (f-string "Checksum generated: #{archive-chk-path}")))
+            (catch Exception e
+              (println (f-string "Warning: Failed to generate archive checksum: #{(.getMessage e)}")))))))))
+
 (def table
   [{:cmds [] :fn help}
    {:cmds ["info"] :fn info}
@@ -410,6 +489,7 @@ Build artefacts:
    {:cmds ["patch"] :fn patch}
    {:cmds ["build"] :fn build}
    {:cmds ["chk"] :fn chk}
+   {:cmds ["archive"] :fn archive}
    {:cmds ["deploy"] :fn deploy}])
 
 (defn -main [args]

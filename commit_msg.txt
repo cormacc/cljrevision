@@ -1,18 +1,16 @@
-feat: Enhanced deploy command with artifact renaming and <REV> placeholder support
+feat: Implemented archive command with zip creation and checksum generation
 
-- Added :dest key support for artifacts in releasables.yaml
-- Implemented <REV> placeholder replacement with current version (MAJOR.MINOR.PATCH)
-- Refactored deploy functionality into focused private functions:
-  - deploy-exec-steps: Execute custom deployment steps
-  - deploy-artefact-to: Deploy single artifact with filename logic
-  - deploy-to: Coordinate deployment to single target
-  - determine-dest-filename: Handle destination filename determination
-- Removed ineffective test file that tested mock implementations
-- All existing functionality preserved and tested
+- Added archive command that creates <ID>-v<REV>.zip files containing build artifacts
+- Respects :dest key with <REV> placeholder replacement for artifact renaming
+- Includes SHA512 checksums for individual artifacts when :chk is not false
+- Generates SHA512 checksum file for the archive itself (.zip.sha512)
+- Uses :archive destination from releasables.yaml configuration
+- Provides clear progress output during archiving process
+- Handles missing source files gracefully with warnings
+- Updated help text to move archive from planned to available commands
+- Added archive command to dispatch table
 
-Example usage:
-  artefacts:
-    - src: "target/app.jar"
-      dest: "myapp-<REV>.jar"    # becomes myapp-1.2.3.jar
-    - src: "dist/archive.tar.gz"  
-      dest: "releases/v<REV>/app-<REV>.tar.gz"  # becomes releases/v1.2.3/app-1.2.3.tar.gz
+Example:
+  ./rel archive
+  Creates: ./build/archives/revision-v1.1.0.zip
+           ./build/archives/revision-v1.1.0.zip.sha512
