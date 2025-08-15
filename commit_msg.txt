@@ -1,0 +1,18 @@
+feat: Enhanced deploy command with artifact renaming and <REV> placeholder support
+
+- Added :dest key support for artifacts in releasables.yaml
+- Implemented <REV> placeholder replacement with current version (MAJOR.MINOR.PATCH)
+- Refactored deploy functionality into focused private functions:
+  - deploy-exec-steps: Execute custom deployment steps
+  - deploy-artefact-to: Deploy single artifact with filename logic
+  - deploy-to: Coordinate deployment to single target
+  - determine-dest-filename: Handle destination filename determination
+- Removed ineffective test file that tested mock implementations
+- All existing functionality preserved and tested
+
+Example usage:
+  artefacts:
+    - src: "target/app.jar"
+      dest: "myapp-<REV>.jar"    # becomes myapp-1.2.3.jar
+    - src: "dist/archive.tar.gz"  
+      dest: "releases/v<REV>/app-<REV>.tar.gz"  # becomes releases/v1.2.3/app-1.2.3.tar.gz

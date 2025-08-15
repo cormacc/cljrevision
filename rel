@@ -314,10 +314,79 @@ Build artefacts:
                 (println (f-string "Error generating checksum: #{(.getMessage e)}"))))
             (println (f-string "... bypassing checksum calculation for #{src} ..."))))))))
 
+(defn- deploy-exec-steps
+  "Execute custom deployment steps from target configuration"
+  [steps]
+  (println "Executing custom deployment steps...")
+  (let [combined-script (str/join " && " steps)]
+    (try
+      (let [result (process/shell {:out :string :err :string} "sh" "-c" combined-script)]
+        (when (:out result) (print (:out result)))
+        (when (and (:err result) (not (str/blank? (:err result))))
+          (print (:err result)))
+        (when (not= 0 (:exit result))
+          (println (f-string "Error: Deployment step failed with exit code #{(:exit result)}"))
+          (System/exit 1)))
+      (catch Exception e
+        (println (f-string "Error executing deployment steps: #{(.getMessage e)}"))
+        (System/exit 1)))))
+
+(defn determine-dest-filename
+  "Determine the destination filename for an artifact.
+  If the artifact has a :dest key, use it and replace <REV> placeholders with version-string.
+  Otherwise, use the source filename."
+  [artefact src-filename version-string]
+  (if-let [custom-dest (:dest artefact)]
+    (str/replace custom-dest "<REV>" version-string)
+    src-filename))
+
+(defn- deploy-artefact-to
+  "Deploy a single artifact to the destination directory"
+  [artefact dest version-string]
+  (let [{:keys [src chk]} artefact
+        src-path (fs/path src)
+        src-filename (fs/file-name src)
+        dest-file (determine-dest-filename artefact src-filename version-string)
+        dest-path (fs/path dest dest-file)
+        dest-chk (str dest-path ".sha512")]
+
+    (println (f-string "  Copying #{src} => #{dest}/#{dest-file}"))
+    (try
+      (fs/copy src-path dest-path {:replace-existing true})
+      (when (not= false chk)
+        (println (f-string "  ... checksum => #{dest-chk}"))
+        (let [checksum (calc-checksum src)]
+          (spit dest-chk checksum)))
+      (catch Exception e
+        (println (f-string "Error deploying #{src}: #{(.getMessage e)}"))
+        (System/exit 1)))))
+
+(defn- deploy-to
+  "Deploy artifacts to a single target destination"
+  [target artefacts version-string]
+  (if (:steps target)
+    (deploy-exec-steps (:steps target))
+
+    (when-let [dest (:dest target)]
+      (println (f-string "Deploying to #{dest}"))
+
+      (try
+        (fs/create-dirs dest)
+        (catch Exception e
+          (println (f-string "Error creating destination directory #{dest}: #{(.getMessage e)}"))
+          (System/exit 1)))
+
+      (doseq [artefact artefacts]
+        (deploy-artefact-to artefact dest version-string)))))
+
 (defn deploy [m]
   (let [releasable (load-default (fs/cwd))
         artefacts (:artefacts releasable)
-        deploy-targets (:deploy releasable)]
+        deploy-targets (:deploy releasable)
+        ;; Load revision info to get current version
+        {:keys [revision]} (load-revision-info releasable)
+        ;; Format version as MAJOR.MINOR.PATCH (without 'v' prefix)
+        version-string (f-string "#{(:major revision)}.#{(:minor revision)}.#{(:patch revision)}")]
     (cond
       (empty? artefacts)
       (println "No artefacts defined in releasables.yaml")
@@ -328,52 +397,9 @@ Build artefacts:
       :else
       (do
         (println (f-string "Deploying #{(count artefacts)} artefact(s) to #{(count deploy-targets)} destination(s)..."))
-
         (doseq [target deploy-targets]
-          (if (:steps target)
-            (do
-              (println "Executing custom deployment steps...")
-              (let [steps (:steps target)
-                    combined-script (str/join " && " steps)]
-                (try
-                  (let [result (process/shell {:out :string :err :string} "sh" "-c" combined-script)]
-                    (when (:out result) (print (:out result)))
-                    (when (and (:err result) (not (str/blank? (:err result))))
-                      (print (:err result)))
-                    (when (not= 0 (:exit result))
-                      (println (f-string "Error: Deployment step failed with exit code #{(:exit result)}"))
-                      (System/exit 1)))
-                  (catch Exception e
-                    (println (f-string "Error executing deployment steps: #{(.getMessage e)}"))
-                    (System/exit 1)))))
-
-            (when-let [dest (:dest target)]
-              (println (f-string "Deploying to #{dest}"))
-
-              (try
-                (fs/create-dirs dest)
-                (catch Exception e
-                  (println (f-string "Error creating destination directory #{dest}: #{(.getMessage e)}"))
-                  (System/exit 1)))
-
-              (doseq [{:keys [src chk] :as artefact} artefacts]
-                (let [src-path (fs/path src)
-                      dest-file (or (:dest artefact) (fs/file-name src))
-                      dest-path (fs/path dest dest-file)
-                      dest-chk (str dest-path ".sha512")]
-
-                  (println (f-string "  Copying #{src} => #{dest}/#{dest-file}"))
-                  (try
-                    (fs/copy src-path dest-path {:replace-existing true})
-                    (when (not= false (:chk artefact))
-                      (println (f-string "  ... checksum => #{dest-chk}"))
-                      (let [checksum (calc-checksum src)]
-                        (spit dest-chk checksum)))
-                    (catch Exception e
-                      (println (f-string "Error deploying #{src}: #{(.getMessage e)}"))
-                      (System/exit 1)))))))
-
-          (println "Deployment completed successfully!"))))))
+          (deploy-to target artefacts version-string))
+        (println "Deployment completed successfully!")))))
 
 (def table
   [{:cmds [] :fn help}
