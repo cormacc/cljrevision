@@ -131,11 +131,11 @@
         "  build                   Build releasable(s)\n"
         "  chk                     Compute sha512 checksums for build artefacts\n"
         "  archive                 Archive artefacts to <ID>-v<REV>.zip file\n"
+        "  package                 Build and archive releasables\n"
         "  deploy                  Deploy artefacts to configured destinations\n\n"
         "Planned commands (not yet implemented):\n"
         "  tag                     Commit current revision and add version tag\n"
-        "  md5                     Compute md5sums for build artefacts\n"
-        "  package                 Build and archive releasables\n\n"
+        "  md5                     Compute md5sums for build artefacts\n\n"
         "Options:\n"
         "  --dryrun                Don't actually perform operations\n"
         "  --id=ID                 Target specific releasable by ID\n"
@@ -480,6 +480,12 @@ Build artefacts:
             (catch Exception e
               (println (f-string "Warning: Failed to generate archive checksum: #{(.getMessage e)}")))))))))
 
+(defn package [m]
+  (println "Building and archiving releasables...")
+  (build m)
+  (archive m)
+  (println "Package operation completed successfully!"))
+
 (def table
   [{:cmds [] :fn help}
    {:cmds ["info"] :fn info}
@@ -490,6 +496,7 @@ Build artefacts:
    {:cmds ["build"] :fn build}
    {:cmds ["chk"] :fn chk}
    {:cmds ["archive"] :fn archive}
+   {:cmds ["package"] :fn package}
    {:cmds ["deploy"] :fn deploy}])
 
 (defn -main [args]
