@@ -132,6 +132,7 @@
         "  chk                     Compute sha512 checksums for build artefacts\n"
         "  archive                 Archive artefacts to <ID>-v<REV>.zip file\n"
         "  package                 Build and archive releasables\n"
+        "  commit                  Commit tracked changes using latest changelog entry\n"
         "  deploy                  Deploy artefacts to configured destinations\n\n"
         "Planned commands (not yet implemented):\n"
         "  tag                     Commit current revision and add version tag\n"
@@ -486,6 +487,99 @@ Build artefacts:
   (archive m)
   (println "Package operation completed successfully!"))
 
+(defn commit [m]
+
+  (let [releasable (load-default (fs/cwd))
+        {:keys [revision entries]} (load-revision-info releasable)
+        version-string (f-string "v#{(:major revision)}.#{(:minor revision)}.#{(:patch revision)}")
+        latest-entry (first entries)
+        dry-run? (or (get-in m [:opts :dryrun]) (get-in m [:opts :dry-run]))]
+
+    (if latest-entry
+      (let [changes (:changes latest-entry)
+            first-change (first changes)
+            remaining-changes (rest changes)
+            commit-summary (f-string "#{version-string} - #{first-change}")
+            commit-body (if (seq remaining-changes)
+                          (str "Also...\n- " (str/join "\n- " remaining-changes))
+                          "")
+            full-commit-msg (if (str/blank? commit-body)
+                              commit-summary
+                              (str commit-summary "\n\n" commit-body))]
+
+        (if dry-run?
+          (do
+            (println "DRY RUN: Would commit the following changes:")
+            (println)
+            (println "Commit message:")
+            (println "================")
+            (println full-commit-msg)
+            (println)
+            (println "Files to be committed:")
+            (println "======================")
+
+            ;; Show what files would be committed
+            (let [status-result (process/shell {:out :string :err :string} "git" "status" "--porcelain")]
+              (if (= 0 (:exit status-result))
+                (let [status-lines (str/split-lines (:out status-result))
+                      modified-files (filter #(re-find #"^[M ]M " %) status-lines)]
+                  (if (seq modified-files)
+                    (doseq [line modified-files]
+                      (let [filename (subs line 3)]
+                        (println (f-string "  M #{filename}"))))
+                    (println "  No modified tracked files found")))
+                (println "  Error: Could not get git status")))
+
+            (println)
+            (println "Run without --dry-run to perform the actual commit."))
+
+          ;; Normal commit logic
+          (do
+            (println (f-string "Committing changes with version #{version-string}..."))
+            (println (f-string "Summary: #{commit-summary}"))
+
+            ;; Write commit message to temporary file
+            (let [commit-msg-file "commit_msg_temp.txt"]
+              (try
+                (spit commit-msg-file full-commit-msg)
+
+                ;; Add all tracked files and commit
+                (let [add-result (process/shell {:out :string :err :string} "git" "add" "-u")
+                      commit-result (process/shell {:out :string :err :string} "git" "commit" "-F" commit-msg-file)]
+
+                  (when (:out add-result) (print (:out add-result)))
+                  (when (and (:err add-result) (not (str/blank? (:err add-result))))
+                    (print (:err add-result)))
+
+                  (when (:out commit-result) (print (:out commit-result)))
+                  (when (and (:err commit-result) (not (str/blank? (:err commit-result))))
+                    (print (:err commit-result)))
+
+                  (cond
+                    (not= 0 (:exit add-result))
+                    (do (println (f-string "Error: Failed to add files (exit code #{(:exit add-result)})"))
+                        (System/exit 1))
+
+                    (not= 0 (:exit commit-result))
+                    (do (println (f-string "Error: Failed to commit (exit code #{(:exit commit-result)})"))
+                        (System/exit 1))
+
+                    :else
+                    (println "Commit completed successfully!")))
+
+                (catch Exception e
+                  (println (f-string "Error during commit: #{(.getMessage e)}"))
+                  (System/exit 1))
+
+                (finally
+                  ;; Clean up temporary file
+                  (when (fs/exists? commit-msg-file)
+                    (fs/delete commit-msg-file))))))))
+
+      (do
+        (println "Error: No changelog entries found")
+        (System/exit 1)))))
+
 (def table
   [{:cmds [] :fn help}
    {:cmds ["info"] :fn info}
@@ -497,9 +591,10 @@ Build artefacts:
    {:cmds ["chk"] :fn chk}
    {:cmds ["archive"] :fn archive}
    {:cmds ["package"] :fn package}
+   {:cmds ["commit"] :fn commit}
    {:cmds ["deploy"] :fn deploy}])
 
 (defn -main [args]
-  (cli/dispatch table args))
+  (cli/dispatch table args {:coerce {:dry-run :boolean :dryrun :boolean}}))
 
 (-main *command-line-args*)
