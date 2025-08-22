@@ -3,11 +3,11 @@
 (require '[babashka.cli :as cli])
 (require '[babashka.fs :as fs])
 ;; (require '[clojure.edn :as edn])
-(require '[clj-yaml.core :as yaml])
-(require '[clojure.pprint :refer [pprint]])
-(require '[bling.core :refer [bling callout]])
+(require '[bling.core :as bling])
 (require '[babashka.process :as process])
 (require '[rel.core :as core])
+(require '[rel.config :as config])
+(require '[rel.changelog :as changelog])
 
 ;; Commands:
 ;;   revision --version, -v   # print the version
@@ -30,27 +30,6 @@
 ;;                                               # Default: false
 ;;   [--id=ID]
 
-;; (defn read-entries
-;;   []
-;;   (if (fs/exists? ENTRIES-LOCATION)
-;;     (edn/read-string (slurp ENTRIES-LOCATION))
-;;     []))
-
-;; (defn add-entry
-;;   [{:keys [opts]}]
-;;   (let [entries (read-entries)]
-;;     (spit ENTRIES-LOCATION
-;;           (conj entries
-;;                 (merge {:timestamp (System/currentTimeMillis)} ;; default timestamp
-;;                        opts)))))
-
-;; From https://gist.github.com/blacktaxi/1676575
-(defmacro f-string [^String string]
-  (let [-re #"#\{(.*?)\}"
-        fstr (clojure.string/replace string -re "%s")
-        fargs (map #(read-string (second %)) (re-seq -re string))]
-    `(format ~fstr ~@fargs)))
-
 (def cli-opts
   {:entry {:alias :e
            :desc "Your dreams."
@@ -58,64 +37,6 @@
    :timestamp {:alias :t
                :desc "A unix timestamp, when you recorded this."
                :coerce {:timestamp :long}}})
-
-(def yaml-filename "releasables.yaml")
-
-(defn find-yaml-root [dir]
-  (println (str "Searching " dir " for " yaml-filename))
-  (let [candidate (fs/path dir yaml-filename)
-        parent (fs/parent dir)]
-    (if (fs/exists? candidate)
-      dir
-      (if (empty? parent)
-        nil
-        (recur parent)))))
-
-(defn load-definition [file-path]
-  (let [yaml-raw (slurp (str file-path))
-        ;; For some reason I adopted a :key: convention with multiple colons....
-        yaml-data (str/replace yaml-raw #":(\S+):" "$1:")]
-    (yaml/parse-string yaml-data)))
-
-;; Now using core/parse-revision from rel.core namespace
-
-(def changelog-matcher #"(?s)<BEGIN CHANGELOG>(.+)<END CHANGELOG>")
-(defn extract-changelog [text comment-prefix]
-  (let [prefix-matcher (re-pattern (str "(?m)^" comment-prefix " ?"))]
-    (-> (re-find changelog-matcher text)
-        second
-        (str/replace prefix-matcher ""))))
-
-(def entry-matcher #"(?m)^Version (\S+) \((.+)\)\n((?:- .+\n)+)")
-(defn parse-changelog-entries [changelog-text]
-  (->> (re-seq entry-matcher changelog-text)
-       (mapv (fn [[match version date changes]]
-               {:version version
-                :date date
-                :changes (-> (str/replace changes #"(?m)^- " "")
-                             (str/split #"\n"))
-                :full-text match}))))
-
-(defn load-revision-info [{:keys [root revision] :as _releasable}]
-  (let [file-path-rel (:src revision)
-        file-path (fs/path root file-path-rel)
-        file-content (slurp (str file-path))
-        rev (core/parse-revision file-content (:regex revision))
-        changelog (extract-changelog file-content (:comment_prefix revision))
-        entries (parse-changelog-entries changelog)]
-    {:revision rev
-     :changelog changelog
-     :entries entries}))
-
-(defn load-all [path]
-  (let [root (find-yaml-root path)
-        definition (load-definition (fs/path root yaml-filename))]
-    (assoc definition :root root)))
-
-(defn load-default [path]
-  (let [{:keys [root releasables]} (load-all path)]
-    ;;Assume releasable root is project root for now...
-    (assoc (first releasables) :root root)))
 
 (defn help
   [_]
@@ -143,20 +64,19 @@
         "  --version, -v           Print the version\n")))
 
 (defn format-revision [{:keys [major minor patch] :as _revision}]
-  ;;FIXME: Coerce these as ints after loading...
-  (f-string "v#{major}.#{minor}.#{patch}"))
+  (core/f-string "v#{major}.#{minor}.#{patch}"))
 
 (defn format-build-artefact [{:keys [src dest chk] :or {dest nil chk true}}]
   (let [deployed-as (or dest (last (str/split src #"/")))]
     (format "%s => %s %s" src deployed-as (if chk "CHK" "NOCHK"))))
 
 (defn describe [releasable]
-  (let [{:keys [revision changelog entries]} (load-revision-info releasable)
+  (let [{:keys [revision changelog entries]} (config/load-revision-info releasable)
         latest-revision (first entries)
         latest-changes (str/join "\n- " (:changes latest-revision))
         build-steps (str/join "\n- " (:build_steps releasable))
         build-artefacts (str/join "\n- " (mapv #(format-build-artefact %) (:artefacts releasable)))]
-    (f-string "#{(:id releasable)} #{(format-revision revision)} (#{(:date latest-revision)})
+    (core/f-string "#{(:id releasable)} #{(format-revision revision)} (#{(:date latest-revision)})
 
 Changes:
 - #{latest-changes}
@@ -184,33 +104,28 @@ Build artefacts:
                        "APRIL" "Apr" "MAY" "May" "JUNE" "Jun"
                        "JULY" "Jul" "AUGUST" "Aug" "SEPTEMBER" "Sep"
                        "OCTOBER" "Oct" "NOVEMBER" "Nov" "DECEMBER" "Dec")]
-    (f-string "#{day} #{month-abbrev} #{year}")))
+    (core/f-string "#{day} #{month-abbrev} #{year}")))
 
 (defn get-dry-run-flag
   "Extract dry-run flag from command options, handling both forms"
   [m]
   (or (get-in m [:opts :dryrun]) (get-in m [:opts :dry-run])))
 
-(defn get-version-string
-  "Format version string from revision map"
-  [{:keys [major minor patch]}]
-  (f-string "v#{major}.#{minor}.#{patch}"))
-
 (defn get-version-string-no-v
   "Format version string without 'v' prefix"
   [{:keys [major minor patch]}]
-  (f-string "#{major}.#{minor}.#{patch}"))
+  (core/f-string "#{major}.#{minor}.#{patch}"))
 
 (defn load-releasable-context
   "Load releasable and revision info - common pattern across commands"
   []
-  (let [releasable (load-default (fs/cwd))
-        {:keys [revision entries] :as rev-info} (load-revision-info releasable)]
+  (let [releasable (config/load-default (fs/cwd))
+        {:keys [revision entries] :as rev-info} (config/load-revision-info releasable)]
     {:releasable releasable
      :revision revision
      :entries entries
      :latest-entry (first entries)
-     :version-string (get-version-string revision)
+     :version-string (format-revision revision)
      :version-string-no-v (get-version-string-no-v revision)}))
 
 (defn execute-shell-command
@@ -232,9 +147,9 @@ Build artefacts:
   [error-msg & args]
   (let [result (apply execute-shell-command args)]
     (when (:error result)
-      (println (f-string "Error: #{error-msg} (exit code #{(:exit-code result)})"))
+      (println (core/f-string "Error: #{error-msg} (exit code #{(:exit-code result)})"))
       (when (not (str/blank? (:stderr result)))
-        (println (f-string "Error details: #{(:stderr result)}")))
+        (println (core/f-string "Error details: #{(:stderr result)}")))
       (System/exit 1))
     result))
 
@@ -273,15 +188,15 @@ Build artefacts:
 
 (defn info [m]
   (let [{:keys [releasable]} (load-releasable-context)]
-    (print (str (callout {:type :info :label "Releasable Info"} (describe releasable)) "\n"))))
+    (print (str (bling/callout {:type :info :label "Releasable Info"} (describe releasable)) "\n"))))
 
 (defn changelog [m]
   (let [{:keys [entries]} (load-releasable-context)]
     (->> entries
          (map (fn [{:keys [version date changes] :as _entry}]
-                (let [label (f-string "Version #{version} (#{date})")
+                (let [label (core/f-string "Version #{version} (#{date})")
                       change-list (str "- " (str/join "\n- " changes))]
-                  (callout {:type :info :label label :theme :gutter} change-list))))
+                  (bling/callout {:type :info :label label :theme :gutter} change-list))))
          (str/join "")
          print)))
 
@@ -293,11 +208,6 @@ Build artefacts:
         lines
         (recur (conj lines line))))))
 
-(defn format-changelog-entry [version date changelog-lines comment-prefix]
-  (let [header (f-string "#{comment-prefix} Version #{version} (#{date})")
-        change-lines (map #(str comment-prefix " - " %) changelog-lines)
-        blank-line (str comment-prefix)]
-    (str/join "\n" (concat [blank-line header] change-lines))))
 
 (defn update-source-file [file-path old-revision new-revision new-changelog-entry]
   (let [file-content (slurp file-path)
@@ -323,19 +233,19 @@ Build artefacts:
       false)))
 
 (defn update-version-and-changelog [increment-fn]
-  (let [releasable (load-default (fs/cwd))
-        {:keys [revision]} (load-revision-info releasable)
+  (let [releasable (config/load-default (fs/cwd))
+        {:keys [revision]} (config/load-revision-info releasable)
         changelog-lines (read-changelog-input)]
     (if (empty? changelog-lines)
       (println "No changelog entries provided. Version not updated.")
       (let [new-revision (increment-fn revision)
-            new-version (f-string "#{(:major new-revision)}.#{(:minor new-revision)}.#{(:patch new-revision)}")
+            new-version (core/f-string "#{(:major new-revision)}.#{(:minor new-revision)}.#{(:patch new-revision)}")
             current-date (format-date)
             comment-prefix (get-in releasable [:revision :comment_prefix])
-            new-changelog-entry (format-changelog-entry new-version current-date changelog-lines comment-prefix)
+            new-changelog-entry (changelog/format-entry new-version current-date changelog-lines comment-prefix)
             file-path (fs/path (:root releasable) (get-in releasable [:revision :src]))]
         (if (update-source-file (str file-path) revision new-revision new-changelog-entry)
-          (println (f-string "Successfully updated version to #{new-version} and added changelog entry."))
+          (println (core/f-string "Successfully updated version to #{new-version} and added changelog entry."))
           (println "Failed to update source file - could not locate changelog section."))))))
 
 (defn patch [m]
@@ -353,12 +263,12 @@ Build artefacts:
     (if (empty? build-steps)
       (println "No build steps defined in releasables.yaml")
       (do
-        (println (f-string "Executing #{(count build-steps)} build step(s)..."))
+        (println (core/f-string "Executing #{(count build-steps)} build step(s)..."))
         ;; Create a script that prefixes each step with an echo of the step description
         (let [prefixed-steps (map-indexed
                               (fn [index step]
-                                (let [step-desc (f-string "[#{(inc index)}/#{(count build-steps)}] #{step}")]
-                                  (f-string "echo '#{step-desc}' && #{step}")))
+                                (let [step-desc (core/f-string "[#{(inc index)}/#{(count build-steps)}] #{step}")]
+                                  (core/f-string "echo '#{step-desc}' && #{step}")))
                               build-steps)
               combined-script (str/join " && " prefixed-steps)]
           (try
@@ -367,23 +277,23 @@ Build artefacts:
               (when (and (:err result) (not (str/blank? (:err result))))
                 (print (:err result)))
               (when (not= 0 (:exit result))
-                (println (f-string "Error: Build failed with exit code #{(:exit result)}"))
+                (println (core/f-string "Error: Build failed with exit code #{(:exit result)}"))
                 (when (not (str/blank? (:err result)))
-                  (println (f-string "Error details: #{(:err result)}")))
+                  (println (core/f-string "Error details: #{(:err result)}")))
                 (System/exit 1)))
             (catch Exception e
-              (println (f-string "Error executing build: #{(.getMessage e)}"))
+              (println (core/f-string "Error executing build: #{(.getMessage e)}"))
               (System/exit 1))))
         (println "All build steps completed successfully!")))))
 
 (defn calc-checksum [src-file]
   (if (fs/exists? (fs/path src-file))
     (let [{:keys [exit out] :as _result} (process/shell {:out :string :err :string}
-                                                        (f-string "sha512sum #{src-file}"))]
+                                                        (core/f-string "sha512sum #{src-file}"))]
       (if (= 0 exit)
         out
         (throw (ex-info "Error: Failed to generate checksum for #{src-file}" {:file src-file}))))
-    (throw (ex-info (f-string "Warning: Source file #{src-file} not found, skipping") {:file src-file}))))
+    (throw (ex-info (core/f-string "Warning: Source file #{src-file} not found, skipping") {:file src-file}))))
 
 (defn chk [m]
   (let [{:keys [releasable]} (load-releasable-context)
@@ -391,15 +301,15 @@ Build artefacts:
     (if (empty? artefacts)
       (println "No artefacts defined in releasables.yaml")
       (do
-        (println (f-string "Calculating SHA512 checksums for #{(count artefacts)} artefact(s)..."))
+        (println (core/f-string "Calculating SHA512 checksums for #{(count artefacts)} artefact(s)..."))
         (doseq [{:keys [src chk] :as artefact} artefacts]
           (if (not= false chk)
             (try
               (let [checksum (calc-checksum src)]
                 (print checksum))
               (catch Exception e
-                (println (f-string "Error generating checksum: #{(.getMessage e)}"))))
-            (println (f-string "... bypassing checksum calculation for #{src} ..."))))))))
+                (println (core/f-string "Error generating checksum: #{(.getMessage e)}"))))
+            (println (core/f-string "... bypassing checksum calculation for #{src} ..."))))))))
 
 (defn- deploy-exec-steps
   "Execute custom deployment steps from target configuration"
@@ -427,15 +337,15 @@ Build artefacts:
         dest-path (fs/path dest dest-file)
         dest-chk (str dest-path ".sha512")]
 
-    (println (f-string "  Copying #{src} => #{dest}/#{dest-file}"))
+    (println (core/f-string "  Copying #{src} => #{dest}/#{dest-file}"))
     (try
       (fs/copy src-path dest-path {:replace-existing true})
       (when (not= false chk)
-        (println (f-string "  ... checksum => #{dest-chk}"))
+        (println (core/f-string "  ... checksum => #{dest-chk}"))
         (let [checksum (calc-checksum src)]
           (spit dest-chk checksum)))
       (catch Exception e
-        (println (f-string "Error deploying #{src}: #{(.getMessage e)}"))
+        (println (core/f-string "Error deploying #{src}: #{(.getMessage e)}"))
         (System/exit 1)))))
 
 (defn- deploy-to
@@ -445,12 +355,12 @@ Build artefacts:
     (deploy-exec-steps (:steps target))
 
     (when-let [dest (:dest target)]
-      (println (f-string "Deploying to #{dest}"))
+      (println (core/f-string "Deploying to #{dest}"))
 
       (try
         (fs/create-dirs dest)
         (catch Exception e
-          (println (f-string "Error creating destination directory #{dest}: #{(.getMessage e)}"))
+          (println (core/f-string "Error creating destination directory #{dest}: #{(.getMessage e)}"))
           (System/exit 1)))
 
       (doseq [artefact artefacts]
@@ -469,7 +379,7 @@ Build artefacts:
 
       :else
       (do
-        (println (f-string "Deploying #{(count artefacts)} artefact(s) to #{(count deploy-targets)} destination(s)..."))
+        (println (core/f-string "Deploying #{(count artefacts)} artefact(s) to #{(count deploy-targets)} destination(s)..."))
         (doseq [target deploy-targets]
           (deploy-to target artefacts version-string-no-v))
         (println "Deployment completed successfully!")))))
@@ -479,7 +389,7 @@ Build artefacts:
         artefacts (:artefacts releasable)
         archive-dest (:archive releasable)
         releasable-id (:id releasable)
-        archive-filename (f-string "#{releasable-id}-v#{version-string-no-v}.zip")
+        archive-filename (core/f-string "#{releasable-id}-v#{version-string-no-v}.zip")
         archive-path (fs/path archive-dest archive-filename)]
 
     (cond
@@ -491,13 +401,13 @@ Build artefacts:
 
       :else
       (do
-        (println (f-string "Archiving #{(count artefacts)} artefact(s) to #{archive-path}..."))
+        (println (core/f-string "Archiving #{(count artefacts)} artefact(s) to #{archive-path}..."))
 
         ;; Create archive destination directory
         (try
           (fs/create-dirs archive-dest)
           (catch Exception e
-            (println (f-string "Error creating archive directory #{archive-dest}: #{(.getMessage e)}"))
+            (println (core/f-string "Error creating archive directory #{archive-dest}: #{(.getMessage e)}"))
             (System/exit 1)))
 
         ;; Delete existing archive if it exists
@@ -513,43 +423,43 @@ Build artefacts:
 
             (if (fs/exists? src-path)
               (do
-                (println (f-string "  Adding #{src} as #{dest-file}"))
+                (println (core/f-string "  Adding #{src} as #{dest-file}"))
                 (try
 ;; Add the main file to zip
                   (let [parent-dir (or (fs/parent src-path) ".")
-                        zip-cmd (f-string "cd #{parent-dir} && zip -u #{archive-path} #{(fs/file-name src-path)}")]
+                        zip-cmd (core/f-string "cd #{parent-dir} && zip -u #{archive-path} #{(fs/file-name src-path)}")]
                     (when (not= 0 (:exit (process/shell {:out :string :err :string} "sh" "-c" zip-cmd)))
                       (throw (ex-info "Failed to add file to zip" {:file src}))))
 
                   ;; Add checksum file if required
                   (when (not= false chk)
-                    (println (f-string "    Adding checksum #{chk-file}"))
+                    (println (core/f-string "    Adding checksum #{chk-file}"))
                     (let [checksum (calc-checksum src)
                           temp-chk-file (str "/tmp/" (fs/file-name src) ".sha512")]
                       (spit temp-chk-file checksum)
-                      (let [chk-zip-cmd (f-string "zip -j -u #{archive-path} #{temp-chk-file}")]
+                      (let [chk-zip-cmd (core/f-string "zip -j -u #{archive-path} #{temp-chk-file}")]
                         (when (not= 0 (:exit (process/shell {:out :string :err :string} "sh" "-c" chk-zip-cmd)))
                           (throw (ex-info "Failed to add checksum to zip" {:file temp-chk-file}))))
                       (fs/delete temp-chk-file)))
 
                   (catch Exception e
-                    (println (f-string "Error archiving #{src}: #{(.getMessage e)}"))
+                    (println (core/f-string "Error archiving #{src}: #{(.getMessage e)}"))
                     (System/exit 1))))
 
               (do
-                (println (f-string "  Warning: Source file #{src} not found, skipping"))))))
+                (println (core/f-string "  Warning: Source file #{src} not found, skipping"))))))
 
-        (println (f-string "Archive created successfully: #{archive-path}"))
+        (println (core/f-string "Archive created successfully: #{archive-path}"))
 
         ;; Generate SHA512 checksum for the archive
         (let [archive-chk-path (str archive-path ".sha512")]
           (try
-            (println (f-string "Generating checksum: #{archive-chk-path}"))
+            (println (core/f-string "Generating checksum: #{archive-chk-path}"))
             (let [checksum (calc-checksum (str archive-path))]
               (spit archive-chk-path checksum)
-              (println (f-string "Checksum generated: #{archive-chk-path}")))
+              (println (core/f-string "Checksum generated: #{archive-chk-path}")))
             (catch Exception e
-              (println (f-string "Warning: Failed to generate archive checksum: #{(.getMessage e)}")))))))))
+              (println (core/f-string "Warning: Failed to generate archive checksum: #{(.getMessage e)}")))))))))
 
 (defn package [m]
   (println "Building and archiving releasables...")
@@ -586,7 +496,7 @@ Build artefacts:
                   (if (seq modified-files)
                     (doseq [line modified-files]
                       (let [filename (subs line 3)]
-                        (println (f-string "  M #{filename}"))))
+                        (println (core/f-string "  M #{filename}"))))
                     (println "  No modified tracked files found")))
                 (println "  Error: Could not get git status")))
 
@@ -595,8 +505,8 @@ Build artefacts:
 
           ;; Normal commit logic
           (do
-            (println (f-string "Committing changes with version #{version-string}..."))
-            (println (f-string "Summary: #{(:summary msg-parts)}"))
+            (println (core/f-string "Committing changes with version #{version-string}..."))
+            (println (core/f-string "Summary: #{(:summary msg-parts)}"))
 
             (with-temp-file "commit_msg_temp.txt" full-commit-msg
               (fn [commit-msg-file]
@@ -614,7 +524,7 @@ Build artefacts:
     (let [changes (:changes latest-entry)
           date (:date latest-entry)
           tag-name version-string
-          tag-title (f-string "Version #{(:major revision)}.#{(:minor revision)}.#{(:patch revision)} (#{date})")
+          tag-title (core/f-string "Version #{(:major revision)}.#{(:minor revision)}.#{(:patch revision)} (#{date})")
           tag-body (str "- " (str/join "\n- " changes))
           full-tag-msg (str tag-title "\n\n" tag-body)]
 
@@ -622,7 +532,7 @@ Build artefacts:
           (do
             (println "DRY RUN: Would create the following tag:")
             (println)
-            (println (f-string "Tag name: #{tag-name}"))
+            (println (core/f-string "Tag name: #{tag-name}"))
             (println)
             (println "Tag annotation:")
             (println "================")
@@ -631,24 +541,24 @@ Build artefacts:
             (println "Run without --dry-run to create the actual tag."))
 
           (do
-            (println (f-string "Creating annotated git tag #{tag-name}..."))
+            (println (core/f-string "Creating annotated git tag #{tag-name}..."))
 
             (with-temp-file "tag_msg_temp.txt" full-tag-msg
               (fn [tag-msg-file]
                 (let [result (execute-shell-command "git" "tag" "-a" tag-name "-F" tag-msg-file)]
                   (cond
                     (= 0 (:exit result))
-                    (println (f-string "Tag #{tag-name} created successfully!"))
+                    (println (core/f-string "Tag #{tag-name} created successfully!"))
 
                     (re-find #"already exists" (:stderr result))
-                    (do (println (f-string "Error: Tag #{tag-name} already exists"))
-                        (println (f-string "Use 'git tag -d #{tag-name}' to delete it first if you want to recreate it"))
+                    (do (println (core/f-string "Error: Tag #{tag-name} already exists"))
+                        (println (core/f-string "Use 'git tag -d #{tag-name}' to delete it first if you want to recreate it"))
                         (System/exit 1))
 
                     :else
-                    (do (println (f-string "Error: Failed to create tag (exit code #{(:exit-code result)})"))
+                    (do (println (core/f-string "Error: Failed to create tag (exit code #{(:exit-code result)})"))
                         (when (not (str/blank? (:stderr result)))
-                          (println (f-string "Error details: #{(:stderr result)}")))
+                          (println (core/f-string "Error details: #{(:stderr result)}")))
                         (System/exit 1)))))))))))
 
 (def table
