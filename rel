@@ -170,13 +170,113 @@ Build artefacts:
 (from #{(:root releasable)}/releasable.yaml)
 ")))
 
+
+
+;; ============ Common Helper Functions ============
+
+(defn format-date []
+  (let [now (java.time.LocalDate/now)
+        day (.getDayOfMonth now)
+        month (.getMonth now)
+        year (.getYear now)
+        month-abbrev (case (.toString month)
+                       "JANUARY" "Jan" "FEBRUARY" "Feb" "MARCH" "Mar"
+                       "APRIL" "Apr" "MAY" "May" "JUNE" "Jun"
+                       "JULY" "Jul" "AUGUST" "Aug" "SEPTEMBER" "Sep"
+                       "OCTOBER" "Oct" "NOVEMBER" "Nov" "DECEMBER" "Dec")]
+    (f-string "#{day} #{month-abbrev} #{year}")))
+
+(defn get-dry-run-flag
+  "Extract dry-run flag from command options, handling both forms"
+  [m]
+  (or (get-in m [:opts :dryrun]) (get-in m [:opts :dry-run])))
+
+(defn get-version-string
+  "Format version string from revision map"
+  [{:keys [major minor patch]}]
+  (f-string "v#{major}.#{minor}.#{patch}"))
+
+(defn get-version-string-no-v
+  "Format version string without 'v' prefix"
+  [{:keys [major minor patch]}]
+  (f-string "#{major}.#{minor}.#{patch}"))
+
+(defn load-releasable-context
+  "Load releasable and revision info - common pattern across commands"
+  []
+  (let [releasable (load-default (fs/cwd))
+        {:keys [revision entries] :as rev-info} (load-revision-info releasable)]
+    {:releasable releasable
+     :revision revision
+     :entries entries
+     :latest-entry (first entries)
+     :version-string (get-version-string revision)
+     :version-string-no-v (get-version-string-no-v revision)}))
+
+(defn execute-shell-command
+  "Execute shell command with standard error handling"
+  [& args]
+  (let [result (apply process/shell {:out :string :err :string} args)]
+    (when (:out result) (print (:out result)))
+    (when (and (:err result) (not (str/blank? (:err result))))
+      (print (:err result)))
+    (if (not= 0 (:exit result))
+      (assoc result
+             :error true
+             :exit-code (:exit result)
+             :stderr (:err result))
+      result)))
+
+(defn execute-shell-or-exit
+  "Execute shell command and exit on failure"
+  [error-msg & args]
+  (let [result (apply execute-shell-command args)]
+    (when (:error result)
+      (println (f-string "Error: #{error-msg} (exit code #{(:exit-code result)})"))
+      (when (not (str/blank? (:stderr result)))
+        (println (f-string "Error details: #{(:stderr result)}")))
+      (System/exit 1))
+    result))
+
+(defn with-temp-file
+  "Execute function with temporary file, ensuring cleanup"
+  [filename content f]
+  (try
+    (spit filename content)
+    (f filename)
+    (catch Exception e
+      (throw e))
+    (finally
+      (when (fs/exists? filename)
+        (fs/delete filename)))))
+
+(defn format-changelog-message
+  "Format changelog entries into a message with title and body"
+  [changes & {:keys [first-line-prefix] :or {first-line-prefix ""}}]
+  (let [first-change (first changes)
+        remaining-changes (rest changes)]
+    {:summary (str first-line-prefix first-change)
+     :body (when (seq remaining-changes)
+             (str "Also...\n- " (str/join "\n- " remaining-changes)))
+     :full (if (seq remaining-changes)
+             (str first-line-prefix first-change "\n\nAlso...\n- " (str/join "\n- " remaining-changes))
+             (str first-line-prefix first-change))}))
+
+(defn require-latest-entry
+  "Check for latest entry or exit with error"
+  [latest-entry]
+  (when-not latest-entry
+    (println "Error: No changelog entries found")
+    (System/exit 1)))
+
+;; ============ End Common Helper Functions ============
+
 (defn info [m]
-  (let [releasable (load-default (fs/cwd))]
+  (let [{:keys [releasable]} (load-releasable-context)]
     (print (str (callout {:type :info :label "Releasable Info"} (describe releasable)) "\n"))))
 
 (defn changelog [m]
-  (let [releasable (load-default (fs/cwd))
-        {:keys [entries]} (load-revision-info releasable)]
+  (let [{:keys [entries]} (load-releasable-context)]
     (->> entries
          (map (fn [{:keys [version date changes] :as _entry}]
                 (let [label (f-string "Version #{version} (#{date})")
@@ -192,20 +292,6 @@ Build artefacts:
       (if (str/blank? line)
         lines
         (recur (conj lines line))))))
-
-(defn format-date []
-  (let [now (java.time.LocalDate/now)
-        day (.getDayOfMonth now)
-        month (.getMonth now)
-        year (.getYear now)
-        month-abbrev (case (.toString month)
-                       "JANUARY" "Jan" "FEBRUARY" "Feb" "MARCH" "Mar"
-                       "APRIL" "Apr" "MAY" "May" "JUNE" "Jun"
-                       "JULY" "Jul" "AUGUST" "Aug" "SEPTEMBER" "Sep"
-                       "OCTOBER" "Oct" "NOVEMBER" "Nov" "DECEMBER" "Dec")]
-    (f-string "#{day} #{month-abbrev} #{year}")))
-
-;; Now using increment functions from rel.core namespace
 
 (defn format-changelog-entry [version date changelog-lines comment-prefix]
   (let [header (f-string "#{comment-prefix} Version #{version} (#{date})")
@@ -262,7 +348,7 @@ Build artefacts:
   (update-version-and-changelog core/increment-major-version))
 
 (defn build [m]
-  (let [releasable (load-default (fs/cwd))
+  (let [{:keys [releasable]} (load-releasable-context)
         build-steps (:build_steps releasable)]
     (if (empty? build-steps)
       (println "No build steps defined in releasables.yaml")
@@ -300,7 +386,7 @@ Build artefacts:
     (throw (ex-info (f-string "Warning: Source file #{src-file} not found, skipping") {:file src-file}))))
 
 (defn chk [m]
-  (let [releasable (load-default (fs/cwd))
+  (let [{:keys [releasable]} (load-releasable-context)
         artefacts (:artefacts releasable)]
     (if (empty? artefacts)
       (println "No artefacts defined in releasables.yaml")
@@ -320,17 +406,7 @@ Build artefacts:
   [steps]
   (println "Executing custom deployment steps...")
   (let [combined-script (str/join " && " steps)]
-    (try
-      (let [result (process/shell {:out :string :err :string} "sh" "-c" combined-script)]
-        (when (:out result) (print (:out result)))
-        (when (and (:err result) (not (str/blank? (:err result))))
-          (print (:err result)))
-        (when (not= 0 (:exit result))
-          (println (f-string "Error: Deployment step failed with exit code #{(:exit result)}"))
-          (System/exit 1)))
-      (catch Exception e
-        (println (f-string "Error executing deployment steps: #{(.getMessage e)}"))
-        (System/exit 1)))))
+    (execute-shell-or-exit "Deployment step failed" "sh" "-c" combined-script)))
 
 (defn determine-dest-filename
   "Determine the destination filename for an artifact.
@@ -381,13 +457,9 @@ Build artefacts:
         (deploy-artefact-to artefact dest version-string)))))
 
 (defn deploy [m]
-  (let [releasable (load-default (fs/cwd))
+  (let [{:keys [releasable version-string-no-v]} (load-releasable-context)
         artefacts (:artefacts releasable)
-        deploy-targets (:deploy releasable)
-        ;; Load revision info to get current version
-        {:keys [revision]} (load-revision-info releasable)
-        ;; Format version as MAJOR.MINOR.PATCH (without 'v' prefix)
-        version-string (f-string "#{(:major revision)}.#{(:minor revision)}.#{(:patch revision)}")]
+        deploy-targets (:deploy releasable)]
     (cond
       (empty? artefacts)
       (println "No artefacts defined in releasables.yaml")
@@ -399,17 +471,15 @@ Build artefacts:
       (do
         (println (f-string "Deploying #{(count artefacts)} artefact(s) to #{(count deploy-targets)} destination(s)..."))
         (doseq [target deploy-targets]
-          (deploy-to target artefacts version-string))
+          (deploy-to target artefacts version-string-no-v))
         (println "Deployment completed successfully!")))))
 
 (defn archive [m]
-  (let [releasable (load-default (fs/cwd))
+  (let [{:keys [releasable version-string-no-v]} (load-releasable-context)
         artefacts (:artefacts releasable)
         archive-dest (:archive releasable)
-        {:keys [revision]} (load-revision-info releasable)
-        version-string (f-string "#{(:major revision)}.#{(:minor revision)}.#{(:patch revision)}")
         releasable-id (:id releasable)
-        archive-filename (f-string "#{releasable-id}-v#{version-string}.zip")
+        archive-filename (f-string "#{releasable-id}-v#{version-string-no-v}.zip")
         archive-path (fs/path archive-dest archive-filename)]
 
     (cond
@@ -438,7 +508,7 @@ Build artefacts:
         (doseq [{:keys [src chk] :as artefact} artefacts]
           (let [src-path (fs/path src)
                 src-filename (fs/file-name src)
-                dest-file (determine-dest-filename artefact src-filename version-string)
+                dest-file (determine-dest-filename artefact src-filename version-string-no-v)
                 chk-file (str dest-file ".sha512")]
 
             (if (fs/exists? src-path)
@@ -488,24 +558,14 @@ Build artefacts:
   (println "Package operation completed successfully!"))
 
 (defn commit [m]
+  (let [{:keys [latest-entry version-string]} (load-releasable-context)
+        dry-run? (get-dry-run-flag m)]
 
-  (let [releasable (load-default (fs/cwd))
-        {:keys [revision entries]} (load-revision-info releasable)
-        version-string (f-string "v#{(:major revision)}.#{(:minor revision)}.#{(:patch revision)}")
-        latest-entry (first entries)
-        dry-run? (or (get-in m [:opts :dryrun]) (get-in m [:opts :dry-run]))]
+    (require-latest-entry latest-entry)
 
-    (if latest-entry
-      (let [changes (:changes latest-entry)
-            first-change (first changes)
-            remaining-changes (rest changes)
-            commit-summary (f-string "#{version-string} - #{first-change}")
-            commit-body (if (seq remaining-changes)
-                          (str "Also...\n- " (str/join "\n- " remaining-changes))
-                          "")
-            full-commit-msg (if (str/blank? commit-body)
-                              commit-summary
-                              (str commit-summary "\n\n" commit-body))]
+    (let [changes (:changes latest-entry)
+          msg-parts (format-changelog-message changes :first-line-prefix (str version-string " - "))
+          full-commit-msg (:full msg-parts)]
 
         (if dry-run?
           (do
@@ -536,65 +596,28 @@ Build artefacts:
           ;; Normal commit logic
           (do
             (println (f-string "Committing changes with version #{version-string}..."))
-            (println (f-string "Summary: #{commit-summary}"))
+            (println (f-string "Summary: #{(:summary msg-parts)}"))
 
-            ;; Write commit message to temporary file
-            (let [commit-msg-file "commit_msg_temp.txt"]
-              (try
-                (spit commit-msg-file full-commit-msg)
-
+            (with-temp-file "commit_msg_temp.txt" full-commit-msg
+              (fn [commit-msg-file]
                 ;; Add all tracked files and commit
-                (let [add-result (process/shell {:out :string :err :string} "git" "add" "-u")
-                      commit-result (process/shell {:out :string :err :string} "git" "commit" "-F" commit-msg-file)]
-
-                  (when (:out add-result) (print (:out add-result)))
-                  (when (and (:err add-result) (not (str/blank? (:err add-result))))
-                    (print (:err add-result)))
-
-                  (when (:out commit-result) (print (:out commit-result)))
-                  (when (and (:err commit-result) (not (str/blank? (:err commit-result))))
-                    (print (:err commit-result)))
-
-                  (cond
-                    (not= 0 (:exit add-result))
-                    (do (println (f-string "Error: Failed to add files (exit code #{(:exit add-result)})"))
-                        (System/exit 1))
-
-                    (not= 0 (:exit commit-result))
-                    (do (println (f-string "Error: Failed to commit (exit code #{(:exit commit-result)})"))
-                        (System/exit 1))
-
-                    :else
-                    (println "Commit completed successfully!")))
-
-                (catch Exception e
-                  (println (f-string "Error during commit: #{(.getMessage e)}"))
-                  (System/exit 1))
-
-                (finally
-                  ;; Clean up temporary file
-                  (when (fs/exists? commit-msg-file)
-                    (fs/delete commit-msg-file))))))))
-
-      (do
-        (println "Error: No changelog entries found")
-        (System/exit 1)))))
+                (execute-shell-or-exit "Failed to add files" "git" "add" "-u")
+                (execute-shell-or-exit "Failed to commit" "git" "commit" "-F" commit-msg-file)
+                (println "Commit completed successfully!"))))))))
 
 (defn tag [m]
-  (let [releasable (load-default (fs/cwd))
-        {:keys [revision entries]} (load-revision-info releasable)
-        version-string (f-string "v#{(:major revision)}.#{(:minor revision)}.#{(:patch revision)}")
-        latest-entry (first entries)
-        dry-run? (or (get-in m [:opts :dryrun]) (get-in m [:opts :dry-run]))]
-    
-    (if latest-entry
-      (let [changes (:changes latest-entry)
-            date (:date latest-entry)
-            tag-name version-string
-            tag-title (f-string "Version #{(:major revision)}.#{(:minor revision)}.#{(:patch revision)} (#{date})")
-            tag-body (str "- " (str/join "\n- " changes))
-            full-tag-msg (str tag-title "\n\n" tag-body)]
-        
+  (let [{:keys [latest-entry version-string revision]} (load-releasable-context)
+        dry-run? (get-dry-run-flag m)]
+
+    (require-latest-entry latest-entry)
+
+    (let [changes (:changes latest-entry)
+          date (:date latest-entry)
+          tag-name version-string
+          tag-title (f-string "Version #{(:major revision)}.#{(:minor revision)}.#{(:patch revision)} (#{date})")
+          tag-body (str "- " (str/join "\n- " changes))
+          full-tag-msg (str tag-title "\n\n" tag-body)]
+
         (if dry-run?
           (do
             (println "DRY RUN: Would create the following tag:")
@@ -606,47 +629,27 @@ Build artefacts:
             (println full-tag-msg)
             (println)
             (println "Run without --dry-run to create the actual tag."))
-          
+
           (do
             (println (f-string "Creating annotated git tag #{tag-name}..."))
-            
-            (let [tag-msg-file "tag_msg_temp.txt"]
-              (try
-                (spit tag-msg-file full-tag-msg)
-                
-                (let [tag-result (process/shell {:out :string :err :string} 
-                                               "git" "tag" "-a" tag-name "-F" tag-msg-file)]
-                  
-                  (when (:out tag-result) (print (:out tag-result)))
-                  (when (and (:err tag-result) (not (str/blank? (:err tag-result))))
-                    (print (:err tag-result)))
-                  
+
+            (with-temp-file "tag_msg_temp.txt" full-tag-msg
+              (fn [tag-msg-file]
+                (let [result (execute-shell-command "git" "tag" "-a" tag-name "-F" tag-msg-file)]
                   (cond
-                    (= 0 (:exit tag-result))
+                    (= 0 (:exit result))
                     (println (f-string "Tag #{tag-name} created successfully!"))
-                    
-                    (re-find #"already exists" (:err tag-result))
+
+                    (re-find #"already exists" (:stderr result))
                     (do (println (f-string "Error: Tag #{tag-name} already exists"))
-                        (println "Use 'git tag -d #{tag-name}' to delete it first if you want to recreate it")
+                        (println (f-string "Use 'git tag -d #{tag-name}' to delete it first if you want to recreate it"))
                         (System/exit 1))
-                    
+
                     :else
-                    (do (println (f-string "Error: Failed to create tag (exit code #{(:exit tag-result)})"))
-                        (when (not (str/blank? (:err tag-result)))
-                          (println (f-string "Error details: #{(:err tag-result)}")))
-                        (System/exit 1))))
-                
-                (catch Exception e
-                  (println (f-string "Error creating tag: #{(.getMessage e)}"))
-                  (System/exit 1))
-                
-                (finally
-                  (when (fs/exists? tag-msg-file)
-                    (fs/delete tag-msg-file))))))))
-      
-      (do
-        (println "Error: No changelog entries found")
-        (System/exit 1)))))
+                    (do (println (f-string "Error: Failed to create tag (exit code #{(:exit-code result)})"))
+                        (when (not (str/blank? (:stderr result)))
+                          (println (f-string "Error details: #{(:stderr result)}")))
+                        (System/exit 1)))))))))))
 
 (def table
   [{:cmds [] :fn help}

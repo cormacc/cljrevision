@@ -1,8 +1,13 @@
 (ns rel.version)
 
-(def current "1.1.1")
+(def current "1.1.2")
 
 ;; <BEGIN CHANGELOG>
+;;
+;; Version 1.1.2 (22 Aug 2025)
+;; - refactor: Extracted common helper functions to reduce code duplication
+;; - Centralized context loading, shell execution, and error handling patterns
+;; - Reduced complexity in commit, tag, deploy, archive, and other commands
 ;;
 ;; Version 1.1.1 (22 Aug 2025)
 ;; - feat: Implemented 'tag' command for creating annotated git tags with version and changelog
