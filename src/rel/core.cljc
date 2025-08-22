@@ -1,6 +1,13 @@
 (ns rel.core
   (:require [clojure.string :as str]))
 
+;; From https://gist.github.com/blacktaxi/1676575
+(defmacro f-string [^String string]
+  (let [-re #"#\{(.*?)\}"
+        fstr (clojure.string/replace string -re "%s")
+        fargs (map #(read-string (second %)) (re-seq -re string))]
+    `(format ~fstr ~@fargs)))
+
 (defn parse-revision [text revision-regex]
   (let [version-matcher (re-pattern revision-regex)
         version (re-find version-matcher text)
