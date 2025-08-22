@@ -133,9 +133,9 @@
         "  archive                 Archive artefacts to <ID>-v<REV>.zip file\n"
         "  package                 Build and archive releasables\n"
         "  commit                  Commit tracked changes using latest changelog entry\n"
+        "  tag                     Create annotated git tag with version and changelog\n"
         "  deploy                  Deploy artefacts to configured destinations\n\n"
         "Planned commands (not yet implemented):\n"
-        "  tag                     Commit current revision and add version tag\n"
         "  md5                     Compute md5sums for build artefacts\n\n"
         "Options:\n"
         "  --dryrun                Don't actually perform operations\n"
@@ -580,6 +580,74 @@ Build artefacts:
         (println "Error: No changelog entries found")
         (System/exit 1)))))
 
+(defn tag [m]
+  (let [releasable (load-default (fs/cwd))
+        {:keys [revision entries]} (load-revision-info releasable)
+        version-string (f-string "v#{(:major revision)}.#{(:minor revision)}.#{(:patch revision)}")
+        latest-entry (first entries)
+        dry-run? (or (get-in m [:opts :dryrun]) (get-in m [:opts :dry-run]))]
+    
+    (if latest-entry
+      (let [changes (:changes latest-entry)
+            date (:date latest-entry)
+            tag-name version-string
+            tag-title (f-string "Version #{(:major revision)}.#{(:minor revision)}.#{(:patch revision)} (#{date})")
+            tag-body (str "- " (str/join "\n- " changes))
+            full-tag-msg (str tag-title "\n\n" tag-body)]
+        
+        (if dry-run?
+          (do
+            (println "DRY RUN: Would create the following tag:")
+            (println)
+            (println (f-string "Tag name: #{tag-name}"))
+            (println)
+            (println "Tag annotation:")
+            (println "================")
+            (println full-tag-msg)
+            (println)
+            (println "Run without --dry-run to create the actual tag."))
+          
+          (do
+            (println (f-string "Creating annotated git tag #{tag-name}..."))
+            
+            (let [tag-msg-file "tag_msg_temp.txt"]
+              (try
+                (spit tag-msg-file full-tag-msg)
+                
+                (let [tag-result (process/shell {:out :string :err :string} 
+                                               "git" "tag" "-a" tag-name "-F" tag-msg-file)]
+                  
+                  (when (:out tag-result) (print (:out tag-result)))
+                  (when (and (:err tag-result) (not (str/blank? (:err tag-result))))
+                    (print (:err tag-result)))
+                  
+                  (cond
+                    (= 0 (:exit tag-result))
+                    (println (f-string "Tag #{tag-name} created successfully!"))
+                    
+                    (re-find #"already exists" (:err tag-result))
+                    (do (println (f-string "Error: Tag #{tag-name} already exists"))
+                        (println "Use 'git tag -d #{tag-name}' to delete it first if you want to recreate it")
+                        (System/exit 1))
+                    
+                    :else
+                    (do (println (f-string "Error: Failed to create tag (exit code #{(:exit tag-result)})"))
+                        (when (not (str/blank? (:err tag-result)))
+                          (println (f-string "Error details: #{(:err tag-result)}")))
+                        (System/exit 1))))
+                
+                (catch Exception e
+                  (println (f-string "Error creating tag: #{(.getMessage e)}"))
+                  (System/exit 1))
+                
+                (finally
+                  (when (fs/exists? tag-msg-file)
+                    (fs/delete tag-msg-file))))))))
+      
+      (do
+        (println "Error: No changelog entries found")
+        (System/exit 1)))))
+
 (def table
   [{:cmds [] :fn help}
    {:cmds ["info"] :fn info}
@@ -592,6 +660,7 @@ Build artefacts:
    {:cmds ["archive"] :fn archive}
    {:cmds ["package"] :fn package}
    {:cmds ["commit"] :fn commit}
+   {:cmds ["tag"] :fn tag}
    {:cmds ["deploy"] :fn deploy}])
 
 (defn -main [args]

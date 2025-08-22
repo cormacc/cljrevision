@@ -1,8 +1,11 @@
 (ns rel.version)
 
-(def current "1.1.0")
+(def current "1.1.1")
 
 ;; <BEGIN CHANGELOG>
+;;
+;; Version 1.1.1 (22 Aug 2025)
+;; - feat: Implemented 'tag' command for creating annotated git tags with version and changelog
 ;;
 ;; Version 1.1.0 (8 Aug 2025)
 ;; - Test minor increment after major
