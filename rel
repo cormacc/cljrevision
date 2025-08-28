@@ -232,13 +232,13 @@ Build artefacts:
         true)
       false)))
 
-(defn update-version-and-changelog [increment-fn]
+(defn update-version-and-changelog [increment-level]
   (let [releasable (config/load-default (fs/cwd))
         {:keys [revision]} (config/load-revision-info releasable)
         changelog-lines (read-changelog-input)]
     (if (empty? changelog-lines)
       (println "No changelog entries provided. Version not updated.")
-      (let [new-revision (increment-fn revision)
+      (let [new-revision (core/increment-version revision increment-level)
             new-version (core/f-string "#{(:major new-revision)}.#{(:minor new-revision)}.#{(:patch new-revision)}")
             current-date (format-date)
             comment-prefix (get-in releasable [:revision :comment_prefix])
@@ -249,13 +249,13 @@ Build artefacts:
           (println "Failed to update source file - could not locate changelog section."))))))
 
 (defn patch [m]
-  (update-version-and-changelog core/increment-patch-version))
+  (update-version-and-changelog :patch))
 
 (defn minor [m]
-  (update-version-and-changelog core/increment-minor-version))
+  (update-version-and-changelog :minor))
 
 (defn major [m]
-  (update-version-and-changelog core/increment-major-version))
+  (update-version-and-changelog :major))
 
 (defn build [m]
   (let [{:keys [releasable]} (load-releasable-context)

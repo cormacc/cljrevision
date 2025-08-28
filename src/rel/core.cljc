@@ -16,23 +16,27 @@
      :prefix prefix :sep1 sep1 :sep2 sep2 :postfix postfix
      :match match}))
 
-(defn increment-patch-version [{:keys [major minor patch prefix sep1 sep2 postfix]}]
-  (let [new-patch (str (inc (Integer/parseInt patch)))]
-    {:major major :minor minor :patch new-patch
-     :prefix prefix :sep1 sep1 :sep2 sep2 :postfix postfix
-     :new-version-string (str prefix major sep1 minor sep2 new-patch postfix)}))
+(defn- build-version-string
+  "Constructs the version string from components"
+  [{:keys [prefix sep1 sep2 postfix]} major minor patch]
+  (str prefix major sep1 minor sep2 patch postfix))
 
-(defn increment-minor-version [{:keys [major minor patch prefix sep1 sep2 postfix]}]
-  (let [new-minor (str (inc (Integer/parseInt minor)))
-        new-patch "0"]
-    {:major major :minor new-minor :patch new-patch
-     :prefix prefix :sep1 sep1 :sep2 sep2 :postfix postfix
-     :new-version-string (str prefix major sep1 new-minor sep2 new-patch postfix)}))
-
-(defn increment-major-version [{:keys [major minor patch prefix sep1 sep2 postfix]}]
-  (let [new-major (str (inc (Integer/parseInt major)))
-        new-minor "0"
-        new-patch "0"]
-    {:major new-major :minor new-minor :patch new-patch
-     :prefix prefix :sep1 sep1 :sep2 sep2 :postfix postfix
-     :new-version-string (str prefix new-major sep1 new-minor sep2 new-patch postfix)}))
+(defn increment-version
+  "Increment version based on level.
+  Returns the new version components and metadata."
+  [{:keys [major minor patch prefix sep1 sep2 postfix]} level]
+  (let [[new-major new-minor new-patch]
+        (case level
+          :major [(str (inc (Integer/parseInt major))) "0" "0"]
+          :minor [major (str (inc (Integer/parseInt minor))) "0"]
+          :patch [major minor (str (inc (Integer/parseInt patch)))])]
+    {:major new-major
+     :minor new-minor
+     :patch new-patch
+     :prefix prefix
+     :sep1 sep1
+     :sep2 sep2
+     :postfix postfix
+     :new-version-string (build-version-string
+                          {:prefix prefix :sep1 sep1 :sep2 sep2 :postfix postfix}
+                          new-major new-minor new-patch)}))

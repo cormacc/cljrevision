@@ -30,7 +30,7 @@
   (testing "increments patch version from 0"
     (let [revision {:major "1" :minor "2" :patch "0"
                     :prefix "(def current \"" :sep1 "." :sep2 "." :postfix "\")"}
-          result (core/increment-patch-version revision)]
+          result (core/increment-version revision :patch)]
       (is (= "1" (:major result)))
       (is (= "2" (:minor result)))
       (is (= "1" (:patch result)))
@@ -39,14 +39,14 @@
   (testing "increments patch version from 9 to 10"
     (let [revision {:major "1" :minor "2" :patch "9"
                     :prefix "(def current \"" :sep1 "." :sep2 "." :postfix "\")"}
-          result (core/increment-patch-version revision)]
+          result (core/increment-version revision :patch)]
       (is (= "10" (:patch result)))
       (is (= "(def current \"1.2.10\")" (:new-version-string result)))))
 
   (testing "preserves major and minor versions"
     (let [revision {:major "5" :minor "7" :patch "3"
                     :prefix "v" :sep1 "." :sep2 "." :postfix ""}
-          result (core/increment-patch-version revision)]
+          result (core/increment-version revision :patch)]
       (is (= "5" (:major result)))
       (is (= "7" (:minor result)))
       (is (= "4" (:patch result)))
@@ -56,7 +56,7 @@
   (testing "increments minor version and resets patch to 0"
     (let [revision {:major "1" :minor "2" :patch "5"
                     :prefix "(def current \"" :sep1 "." :sep2 "." :postfix "\")"}
-          result (core/increment-minor-version revision)]
+          result (core/increment-version revision :minor)]
       (is (= "1" (:major result)))
       (is (= "3" (:minor result)))
       (is (= "0" (:patch result)))
@@ -65,7 +65,7 @@
   (testing "increments minor from 9 to 10"
     (let [revision {:major "2" :minor "9" :patch "3"
                     :prefix "v" :sep1 "." :sep2 "." :postfix ""}
-          result (core/increment-minor-version revision)]
+          result (core/increment-version revision :minor)]
       (is (= "2" (:major result)))
       (is (= "10" (:minor result)))
       (is (= "0" (:patch result)))
@@ -74,7 +74,7 @@
   (testing "resets patch even when it's already 0"
     (let [revision {:major "1" :minor "5" :patch "0"
                     :prefix "" :sep1 "." :sep2 "." :postfix ""}
-          result (core/increment-minor-version revision)]
+          result (core/increment-version revision :minor)]
       (is (= "1" (:major result)))
       (is (= "6" (:minor result)))
       (is (= "0" (:patch result)))
@@ -84,7 +84,7 @@
   (testing "increments major version and resets minor and patch to 0"
     (let [revision {:major "1" :minor "5" :patch "3"
                     :prefix "(def current \"" :sep1 "." :sep2 "." :postfix "\")"}
-          result (core/increment-major-version revision)]
+          result (core/increment-version revision :major)]
       (is (= "2" (:major result)))
       (is (= "0" (:minor result)))
       (is (= "0" (:patch result)))
@@ -93,7 +93,7 @@
   (testing "increments major from 9 to 10"
     (let [revision {:major "9" :minor "12" :patch "45"
                     :prefix "version-" :sep1 "." :sep2 "." :postfix ""}
-          result (core/increment-major-version revision)]
+          result (core/increment-version revision :major)]
       (is (= "10" (:major result)))
       (is (= "0" (:minor result)))
       (is (= "0" (:patch result)))
@@ -102,7 +102,7 @@
   (testing "resets minor and patch even when already 0"
     (let [revision {:major "3" :minor "0" :patch "0"
                     :prefix "v" :sep1 "-" :sep2 "-" :postfix "-RELEASE"}
-          result (core/increment-major-version revision)]
+          result (core/increment-version revision :major)]
       (is (= "4" (:major result)))
       (is (= "0" (:minor result)))
       (is (= "0" (:patch result)))
@@ -130,24 +130,24 @@
 
       (doseq [{:keys [input expected-patch expected-minor expected-major]} test-cases]
         (testing (str "Format: " (:prefix input) "X" (:sep1 input) "Y" (:sep2 input) "Z" (:postfix input))
-          (is (= expected-patch (:new-version-string (core/increment-patch-version input))))
-          (is (= expected-minor (:new-version-string (core/increment-minor-version input))))
-          (is (= expected-major (:new-version-string (core/increment-major-version input)))))))))
+          (is (= expected-patch (:new-version-string (core/increment-version input :patch))))
+          (is (= expected-minor (:new-version-string (core/increment-version input :minor))))
+          (is (= expected-major (:new-version-string (core/increment-version input :major)))))))))
 
 (deftest edge-cases-test
   (testing "handles large version numbers"
     (let [revision {:major "999" :minor "999" :patch "999"
                     :prefix "" :sep1 "." :sep2 "." :postfix ""}]
-      (is (= "1000" (:patch (core/increment-patch-version revision))))
-      (is (= "1000" (:minor (core/increment-minor-version revision))))
-      (is (= "1000" (:major (core/increment-major-version revision))))))
+      (is (= "1000" (:patch (core/increment-version revision :patch))))
+      (is (= "1000" (:minor (core/increment-version revision :minor))))
+      (is (= "1000" (:major (core/increment-version revision :major))))))
 
   (testing "preserves all formatting elements"
     (let [revision {:major "1" :minor "2" :patch "3"
                     :prefix "###" :sep1 "~!~" :sep2 "@@@" :postfix "###"}
-          patch-result (core/increment-patch-version revision)
-          minor-result (core/increment-minor-version revision)
-          major-result (core/increment-major-version revision)]
+          patch-result (core/increment-version revision :patch)
+          minor-result (core/increment-version revision :minor)
+          major-result (core/increment-version revision :major)]
       (is (= "###1~!~2@@@4###" (:new-version-string patch-result)))
       (is (= "###1~!~3@@@0###" (:new-version-string minor-result)))
       (is (= "###2~!~0@@@0###" (:new-version-string major-result))))))

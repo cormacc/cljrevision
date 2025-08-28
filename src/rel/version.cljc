@@ -1,8 +1,11 @@
 (ns rel.version)
 
-(def current "1.1.2")
+(def current "1.1.3")
 
 ;; <BEGIN CHANGELOG>
+;;
+;; Version 1.1.3 (29 Aug 2025)
+;; - bla
 ;;
 ;; Version 1.1.2 (22 Aug 2025)
 ;; - refactor: Extracted common helper functions to reduce code duplication
