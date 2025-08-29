@@ -295,6 +295,99 @@ Build artefacts:
         (throw (ex-info "Error: Failed to generate checksum for #{src-file}" {:file src-file}))))
     (throw (ex-info (core/f-string "Warning: Source file #{src-file} not found, skipping") {:file src-file}))))
 
+;; ============ Unified Artifact Processing ============
+
+(defn determine-dest-filename
+  "Determine the destination filename for an artifact.
+  If the artifact has a :dest key, use it and replace <REV> placeholders with version-string.
+  Otherwise, use the source filename."
+  [artefact src-filename version-string]
+  (if-let [custom-dest (:dest artefact)]
+    (str/replace custom-dest "<REV>" version-string)
+    src-filename))
+
+(defn- process-artifact-checksum
+  "Generate and handle checksum for an artifact if required.
+  Returns the checksum string or nil if checksums are disabled."
+  [src-path chk?]
+  (when chk?
+    (calc-checksum (str src-path))))
+
+(defn- ensure-destination-dir
+  "Create destination directory if it doesn't exist."
+  [dest-dir error-msg]
+  (try
+    (fs/create-dirs dest-dir)
+    (catch Exception e
+      (println (core/f-string "Error creating directory #{dest-dir}: #{(.getMessage e)}"))
+      (when error-msg (println error-msg))
+      (System/exit 1))))
+
+(defn- process-artifact-base
+  "Base function for processing a single artifact.
+  Returns a map with artifact processing details."
+  [{:keys [src chk] :as artefact} version-string]
+  (let [src-path (fs/path src)
+        src-filename (fs/file-name src)
+        dest-filename (determine-dest-filename artefact src-filename version-string)
+        should-checksum? (not= false chk)]
+    {:src-path src-path
+     :src-filename src-filename
+     :dest-filename dest-filename
+     :exists? (fs/exists? src-path)
+     :should-checksum? should-checksum?
+     :artefact artefact}))
+
+(defn- copy-artifact-to-dest
+  "Copy an artifact to a destination directory with optional checksum."
+  [artifact-info dest-dir]
+  (let [{:keys [src-path dest-filename should-checksum? artefact]} artifact-info
+        dest-path (fs/path dest-dir dest-filename)
+        dest-chk (str dest-path ".sha512")]
+
+    (println (core/f-string "  Copying #{(:src artefact)} => #{dest-dir}/#{dest-filename}"))
+    (try
+      (fs/copy src-path dest-path {:replace-existing true})
+      (when should-checksum?
+        (println (core/f-string "  ... checksum => #{dest-chk}"))
+        (let [checksum (process-artifact-checksum src-path true)]
+          (spit dest-chk checksum)))
+      (catch Exception e
+        (println (core/f-string "Error deploying #{(:src artefact)}: #{(.getMessage e)}"))
+        (System/exit 1)))))
+
+(defn- add-artifact-to-archive
+  "Add an artifact to a zip archive with optional checksum."
+  [artifact-info archive-path]
+  (let [{:keys [src-path src-filename dest-filename should-checksum? artefact exists?]} artifact-info]
+    (if exists?
+      (do
+        (println (core/f-string "  Adding #{(:src artefact)} as #{dest-filename}"))
+        (try
+          ;; Add the main file to zip
+          (let [parent-dir (or (fs/parent src-path) ".")
+                zip-cmd (core/f-string "cd #{parent-dir} && zip -u #{archive-path} #{src-filename}")]
+            (when (not= 0 (:exit (process/shell {:out :string :err :string} "sh" "-c" zip-cmd)))
+              (throw (ex-info "Failed to add file to zip" {:file (:src artefact)}))))
+
+          ;; Add checksum file if required
+          (when should-checksum?
+            (println (core/f-string "    Adding checksum #{dest-filename}.sha512"))
+            (let [checksum (process-artifact-checksum src-path true)
+                  temp-chk-file (str "/tmp/" src-filename ".sha512")]
+              (spit temp-chk-file checksum)
+              (let [chk-zip-cmd (core/f-string "zip -j -u #{archive-path} #{temp-chk-file}")]
+                (when (not= 0 (:exit (process/shell {:out :string :err :string} "sh" "-c" chk-zip-cmd)))
+                  (throw (ex-info "Failed to add checksum to zip" {:file temp-chk-file}))))
+              (fs/delete temp-chk-file)))
+
+          (catch Exception e
+            (println (core/f-string "Error archiving #{(:src artefact)}: #{(.getMessage e)}"))
+            (System/exit 1))))
+      (println (core/f-string "  Warning: Source file #{(:src artefact)} not found, skipping")))))
+
+;; ============ End Unified Artifact Processing ============
+
 (defn chk [m]
   (let [{:keys [releasable]} (load-releasable-context)
         artefacts (:artefacts releasable)]
@@ -318,53 +411,21 @@ Build artefacts:
   (let [combined-script (str/join " && " steps)]
     (execute-shell-or-exit "Deployment step failed" "sh" "-c" combined-script)))
 
-(defn determine-dest-filename
-  "Determine the destination filename for an artifact.
-  If the artifact has a :dest key, use it and replace <REV> placeholders with version-string.
-  Otherwise, use the source filename."
-  [artefact src-filename version-string]
-  (if-let [custom-dest (:dest artefact)]
-    (str/replace custom-dest "<REV>" version-string)
-    src-filename))
-
-(defn- deploy-artefact-to
-  "Deploy a single artifact to the destination directory"
-  [artefact dest version-string]
-  (let [{:keys [src chk]} artefact
-        src-path (fs/path src)
-        src-filename (fs/file-name src)
-        dest-file (determine-dest-filename artefact src-filename version-string)
-        dest-path (fs/path dest dest-file)
-        dest-chk (str dest-path ".sha512")]
-
-    (println (core/f-string "  Copying #{src} => #{dest}/#{dest-file}"))
-    (try
-      (fs/copy src-path dest-path {:replace-existing true})
-      (when (not= false chk)
-        (println (core/f-string "  ... checksum => #{dest-chk}"))
-        (let [checksum (calc-checksum src)]
-          (spit dest-chk checksum)))
-      (catch Exception e
-        (println (core/f-string "Error deploying #{src}: #{(.getMessage e)}"))
-        (System/exit 1)))))
-
 (defn- deploy-to
-  "Deploy artifacts to a single target destination"
+  "Deploy artifacts to a single target destination using unified processing"
   [target artefacts version-string]
   (if (:steps target)
     (deploy-exec-steps (:steps target))
 
     (when-let [dest (:dest target)]
       (println (core/f-string "Deploying to #{dest}"))
-
-      (try
-        (fs/create-dirs dest)
-        (catch Exception e
-          (println (core/f-string "Error creating destination directory #{dest}: #{(.getMessage e)}"))
-          (System/exit 1)))
+      (ensure-destination-dir dest nil)
 
       (doseq [artefact artefacts]
-        (deploy-artefact-to artefact dest version-string)))))
+        (let [artifact-info (process-artifact-base artefact version-string)]
+          (if (:exists? artifact-info)
+            (copy-artifact-to-dest artifact-info dest)
+            (println (core/f-string "  Warning: Source file #{(:src artefact)} not found, skipping"))))))))
 
 (defn deploy [m]
   (let [{:keys [releasable version-string-no-v]} (load-releasable-context)
@@ -404,58 +465,24 @@ Build artefacts:
         (println (core/f-string "Archiving #{(count artefacts)} artefact(s) to #{archive-path}..."))
 
         ;; Create archive destination directory
-        (try
-          (fs/create-dirs archive-dest)
-          (catch Exception e
-            (println (core/f-string "Error creating archive directory #{archive-dest}: #{(.getMessage e)}"))
-            (System/exit 1)))
+        (ensure-destination-dir archive-dest "Failed to create archive directory")
 
         ;; Delete existing archive if it exists
         (when (fs/exists? archive-path)
           (fs/delete archive-path))
 
-        ;; Create zip archive with artifacts
-        (doseq [{:keys [src chk] :as artefact} artefacts]
-          (let [src-path (fs/path src)
-                src-filename (fs/file-name src)
-                dest-file (determine-dest-filename artefact src-filename version-string-no-v)
-                chk-file (str dest-file ".sha512")]
-
-            (if (fs/exists? src-path)
-              (do
-                (println (core/f-string "  Adding #{src} as #{dest-file}"))
-                (try
-;; Add the main file to zip
-                  (let [parent-dir (or (fs/parent src-path) ".")
-                        zip-cmd (core/f-string "cd #{parent-dir} && zip -u #{archive-path} #{(fs/file-name src-path)}")]
-                    (when (not= 0 (:exit (process/shell {:out :string :err :string} "sh" "-c" zip-cmd)))
-                      (throw (ex-info "Failed to add file to zip" {:file src}))))
-
-                  ;; Add checksum file if required
-                  (when (not= false chk)
-                    (println (core/f-string "    Adding checksum #{chk-file}"))
-                    (let [checksum (calc-checksum src)
-                          temp-chk-file (str "/tmp/" (fs/file-name src) ".sha512")]
-                      (spit temp-chk-file checksum)
-                      (let [chk-zip-cmd (core/f-string "zip -j -u #{archive-path} #{temp-chk-file}")]
-                        (when (not= 0 (:exit (process/shell {:out :string :err :string} "sh" "-c" chk-zip-cmd)))
-                          (throw (ex-info "Failed to add checksum to zip" {:file temp-chk-file}))))
-                      (fs/delete temp-chk-file)))
-
-                  (catch Exception e
-                    (println (core/f-string "Error archiving #{src}: #{(.getMessage e)}"))
-                    (System/exit 1))))
-
-              (do
-                (println (core/f-string "  Warning: Source file #{src} not found, skipping"))))))
+        ;; Create zip archive with artifacts using unified processing
+        (doseq [artefact artefacts]
+          (let [artifact-info (process-artifact-base artefact version-string-no-v)]
+            (add-artifact-to-archive artifact-info archive-path)))
 
         (println (core/f-string "Archive created successfully: #{archive-path}"))
 
-        ;; Generate SHA512 checksum for the archive
+        ;; Generate SHA512 checksum for the archive itself
         (let [archive-chk-path (str archive-path ".sha512")]
           (try
             (println (core/f-string "Generating checksum: #{archive-chk-path}"))
-            (let [checksum (calc-checksum (str archive-path))]
+            (let [checksum (process-artifact-checksum archive-path true)]
               (spit archive-chk-path checksum)
               (println (core/f-string "Checksum generated: #{archive-chk-path}")))
             (catch Exception e
